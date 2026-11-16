@@ -83,6 +83,7 @@ func _anfitrion() -> void:
 		grande[1].append([i, Vector2(i, i), "enemigo"])
 	var ida = Red.desempaquetar(Red.empaquetar(grande))
 	_ok(ida is Array and ida[1].size() == 400 and ida[1][7][1] == Vector2(7, 7), "y uno grande va comprimido y vuelve igual")
+	_lo_raro_no_rompe()
 	m._sala_online.abrir()
 	m._sala_online._activar("crear")
 	_ok(await _hasta(func(): return red.en_sala() and red.codigo.length() == 4), "el anfitrión crea la sala y recibe un código")
@@ -124,6 +125,15 @@ func _anfitrion() -> void:
 	_ok(await _hasta(func(): return not m._panel.visible, 25.0), "el invitado lo cierra con sus teclas")
 	_ok(not paused and m.actual.get("evento_hecho", false), "y la partida sigue")
 	await _segundos(1.0)
+	# Un evento del J1 (mío): con la partida parada por mí, el invitado abre su menú igual.
+	m._tomar_panel(m.jugador)
+	paused = true
+	m._panel.abrir("mendigo", RandomNumberGenerator.new())
+	_ok(await _hasta(func(): return pareja.pausa_remota, 20.0), "con un evento mío abierto, el invitado abre su menú")
+	_ok(await _hasta(func(): return not pareja.pausa_remota, 20.0), "y lo vuelve a cerrar")
+	m._panel._cerrar()
+	_ok(not m._panel.visible and not paused, "cierro mi evento y la partida sigue")
+	await _segundos(1.0)
 	# Una sala con pelea: los enemigos viajan.
 	var c := _sala_de_pelea()
 	_ok(c.x > -99, "hay una sala con pelea")
@@ -150,16 +160,77 @@ func _anfitrion() -> void:
 	m._ir_al_menu()
 	_ok(m._sala_online.visible and red.en_sala() and not pareja.en_partida, "tras la partida el anfitrión vuelve al vestíbulo con la sala abierta")
 	_ok(not Red.reenviando, "y deja de contar")
-	# Segunda partida, y el invitado se va a mitad.
+	# Segunda partida (sin cerrar el vestíbulo a mano: lo cierra el arranque), que acaba enseguida.
 	await _segundos(4.0)
-	m._sala_online.cerrar()
 	m._al_elegir_personaje("tahur", 0, false, false)
 	await _esperar(5)
 	_ok(pareja.jugando_anfitrion() and m.jugador2 != null, "se puede empezar otra partida sin salir de la sala")
+	_ok(not m._sala_online.visible, "y el vestíbulo no se queda encima de la partida")
+	await _segundos(3.0)
+	m._acabar(false)
+	await _segundos(2.0)
+	# OTRA MANO pasa por el vestíbulo (la sala sigue abierta): tampoco se queda encima.
+	m._otra_mano()
+	await _esperar(5)
+	_ok(pareja.jugando_anfitrion() and J.coop and m.jugador2 != null and m.jugador2.remoto, "OTRA MANO sigue siendo online")
+	_ok(not m._sala_online.visible and not m._menu.visible and not paused, "y la juego sin el vestíbulo por medio")
+	# El invitado se va a mitad.
 	_ok(await _hasta(func(): return not J.coop and m.jugador2 == null, 30.0), "si el invitado se va, se sigue en solitario")
 	_ok(not red.en_sala() and not pareja.en_partida and not paused, "sin sala y sin parar la partida")
 	_ok(m.jugador.entrada == Mando.TODO or not m.jugador.remoto, "el J1 sigue manejándose")
 	print("[anfitrion] bytes enviados: %d" % red.bytes_enviados)
+
+
+## Lo que mandaría un ordenador con el juego tocado: se acota o se ignora, sin romper nada.
+func _lo_raro_no_rompe() -> void:
+	var enorme: Array = [30, []]
+	for i in 3000:
+		enorme[1].append([3, i, i + 1])
+	_ok(Red.desempaquetar(Red.empaquetar(enorme), Red.TOPE_DEL_INVITADO) == null
+			and Red.desempaquetar(Red.empaquetar([20, 1, Vector2.ONE, Vector2.ZERO, null]), Red.TOPE_DEL_INVITADO) != null,
+			"lo grande del invitado no se abre; lo suyo de siempre, sí")
+	var pareja_gd: GDScript = load("res://scripts/pareja.gd")
+	_ok((load("res://scripts/jugo.gd") as GDScript).REENVIABLES.all(func(f): return pareja_gd.ARGS_FX.has(f)),
+			"cada efecto que se reenvía sabe qué argumentos admite")
+	_ok(pareja_gd._args_fx(&"camara_lenta", [1.0e9, 0.0]) == [1.5, 0.1] and pareja_gd._args_fx(&"cine", ["x", Vector2.ZERO, 0.1]) == null
+			and pareja_gd._args_fx(&"trozos", [Vector2.ZERO, 100000, 1.0])[1] == 24 and pareja_gd._args_fx(&"golpe_jugador", []) == [],
+			"los efectos que llegan se acotan (ni cámara lenta eterna ni un millón de trozos)")
+	var e = (load("res://scripts/espejo.gd") as GDScript).new()
+	var raices: Array = []
+	for i in 4:
+		raices.append(Node2D.new())
+		root.add_child(raices[-1])
+	var vacio := [PackedByteArray(), PackedInt32Array()]
+	# Una cadena de grupos: el cuarto nivel ya no se crea (lo más hondo que copia el anfitrión es el tercero).
+	e.aplicar([[], [[1, -3, 0, 0, 0, 0, -1, []], [2, 1, 0, 0, 0, 0, -1, []], [3, 2, 0, 0, 0, 0, -1, []],
+			[4, 3, 0, 0, 0, 0, -1, []]]] + vacio, raices)
+	_ok(e._nodos.has(3) and not e._nodos.has(4), "el espejo no crea nada más hondo de lo que se copia")
+	# Raíz o tipo inventados; y un sprite con casillas de otro tipo, una z enorme y un material que no existe.
+	e.aplicar([[], [[5, -9, 0, 0, 0, 0, -1, []], [6, -1, 7, 0, 0, 0, -1, []],
+			[7, -1, 1, 0, 0, -3, -1, ["no", "es", Vector2.INF, 0, 0, 99999, 77]]]] + vacio, raices)
+	var n7 = e._nodos.get(7)
+	_ok(not e._nodos.has(5) and not e._nodos.has(6), "ni con una raíz o un tipo inventados")
+	_ok(n7 != null and n7.visible and n7.scale == Vector2.ONE and n7.material == null and n7.frame == 0
+			and n7.z_index == RenderingServer.CANVAS_ITEM_Z_MAX, "lo que no es de su tipo se ignora y lo enorme se acota")
+	e.aplicar([[], [[7, -1, 2, 0, 0, 0, 1, [false]]]] + vacio, raices)
+	_ok(n7.visible, "el mismo número con otro tipo de nodo no toca nada")
+	# Texturas: un número fuera de tope, una ruta que sale de assets y un PNG que dice ser enorme.
+	var png := Image.create(4, 4, false, Image.FORMAT_RGBA8).save_png_to_buffer()
+	var gigante := png.duplicate()
+	gigante.encode_u32(16, 0x00100000)  # el ancho del IHDR, que el PNG lee al revés: 4096 píxeles
+	e.aplicar([[[1, "", png], [2, "", gigante], [3, "res://assets/../project.godot", PackedByteArray()], [9999, "", png]], []] + vacio, raices)
+	_ok(e._tex_por_numero.has(1) and not e._tex_por_numero.has(2) and not e._tex_por_numero.has(3) and not e._tex_por_numero.has(9999),
+			"solo entran texturas pequeñas, del juego y con número")
+	# Y un tope de nodos.
+	var muchos: Array = []
+	for i in 3100:
+		muchos.append([100 + i, -2, 0, 0, 0, 0, -1, []])
+	e.aplicar([[], muchos] + vacio, raices)
+	_ok(e._nodos.size() == e.TOPE_NODOS, "como mucho %d nodos de pega" % e.TOPE_NODOS)
+	e.vaciar()
+	_ok(e._nodos.is_empty() and e._tex_por_numero.is_empty(), "y al vaciar no queda nada (las texturas vuelven con la sala)")
+	for r in raices:
+		r.queue_free()
 
 
 # ------------------------------------------------ invitado
@@ -210,11 +281,22 @@ func _invitado() -> void:
 	await _segundos(0.4)
 	pareja.pedir([pareja.I_TECLA, KEY_ENTER])
 	_ok(await _hasta(func(): return not m._panel.visible and not paused, 10.0), "me marcho del evento y se cierra en los dos")
+	# Un evento que maneja el anfitrión: la partida está parada por él, pero mi menú se abre.
+	_ok(await _hasta(func(): return m._panel.visible and m._dueno_panel == m.jugador, 20.0), "veo el evento que abre el anfitrión")
+	_ok(paused and pareja.pausa_prestada(), "con la partida parada por él")
+	root.push_input(_tecla(KEY_ESCAPE))
+	_ok(m._menu.visible and paused, "Esc me abre el menú igual")
+	_ok(not m._panel.visible, "y su panel no lo tapa")
+	await _segundos(1.5)
+	root.push_input(_tecla(KEY_ESCAPE))
+	_ok(not m._menu.visible and m._panel.visible, "al cerrar el menú vuelvo a ver su evento")
+	_ok(await _hasta(func(): return not m._panel.visible and not paused, 20.0), "y cuando lo cierra él, sigo")
 	# La sala de pelea del anfitrión.
 	_ok(await _hasta(func(): return m.actual.get("tipo") == TIPO.NORMAL and pareja.n_sala >= 2, 20.0), "cuando el anfitrión cambia de sala, aquí también")
 	_ok(await _hasta(func(): return m._horda.get_child_count() > 0, 20.0), "y se ven sus enemigos (%d)" % m._horda.get_child_count())
 	_ok(await _hasta(func(): return J.oro == 77), "el oro es el del anfitrión")
 	_ok(await _hasta(func(): return m._barra.en_combate and J.en_combate), "la fila de cartas está en combate")
+	_ok(not m._sala._puertas_abiertas, "y las puertas, cerradas como en el anfitrión")
 	_ok(m._salas_limpiadas == 0 and not m.en_combate, "pero aquí no se simula ninguna pelea")
 	# Pauso y reanudo.
 	m.quizas_pausar()
@@ -235,14 +317,37 @@ func _invitado() -> void:
 	_ok(await _hasta(func(): return m._pantalla.visible, 30.0), "cuando acaba la partida, sale la pantalla final")
 	_ok(await _hasta(func(): return m._sala_online.visible and not pareja.en_partida, 30.0), "y al volver el anfitrión al vestíbulo, yo también")
 	_ok(red.en_pareja(), "seguimos en la sala")
-	# Segunda partida: me voy yo.
+	_ok(_paneles_de_siempre(), "y los paneles vuelven a ser los de siempre (procesan, cogen el ratón y no se ven)")
+	# Segunda partida: la acaba el anfitrión y pide OTRA MANO.
 	_ok(await _hasta(func(): return pareja.jugando_invitado(), 30.0), "empieza otra partida")
+	_ok(await _hasta(func(): return m._pantalla.visible, 30.0), "se acaba")
+	_ok(await _hasta(func(): return pareja.jugando_invitado() and not m._pantalla.visible, 30.0), "y con OTRA MANO empieza la tercera")
+	_ok(not m._sala_online.visible and not m._menu.visible, "sin el vestíbulo por medio")
+	# Me voy yo.
 	await _segundos(2.0)
 	m.quizas_pausar()
 	m._ir_al_menu()
 	_ok(not red.en_sala() and not pareja.en_partida and not Red.espejo, "al irme al menú dejo la sala")
 	_ok(m._menu.visible, "y estoy en el menú principal")
+	_ok(_paneles_de_siempre(), "con los paneles listos para una partida en local")
 	await _esperar(30)
+
+
+## Los paneles de evento y de apuestas, como en una partida local: ni dibujo ni a la vista.
+func _paneles_de_siempre() -> bool:
+	for panel in [m._panel, m._panel_apuestas]:
+		if panel.visible or not panel.is_processing() or not panel.is_processing_unhandled_input() \
+				or panel.mouse_filter != Control.MOUSE_FILTER_STOP:
+			return false
+	return true
+
+
+func _tecla(codigo: Key) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.pressed = true
+	ev.keycode = codigo
+	ev.physical_keycode = codigo
+	return ev
 
 
 func PersonajesDB_tiene(id: String) -> bool:

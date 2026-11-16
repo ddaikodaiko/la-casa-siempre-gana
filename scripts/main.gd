@@ -311,6 +311,11 @@ func _recoger_partida() -> void:
 	_carta_pendiente = ""
 	_hud.jefe_espejo = []
 	_letrero_coop.visible = false
+	# Un evento o una máquina a medias (en el invitado, el dibujo del anfitrión) no se queda
+	# pintado encima del menú o del vestíbulo, y los paneles vuelven a funcionar en local.
+	_panel.visible = false
+	_panel_apuestas.visible = false
+	_pareja.soltar_paneles()
 	get_tree().paused = true
 
 
@@ -456,6 +461,7 @@ func _al_tenir(id: String) -> void:
 
 
 func _arrancar() -> void:
+	_sala_online.cerrar()  # OTRA MANO online pasa por el vestíbulo: que no se quede encima
 	_preparar_jugadores()
 	_pareja.al_arrancar()
 	Sonido.musica("piso")
@@ -525,6 +531,7 @@ func mostrar_cartel(titulo: String, subtitulo: String) -> void:
 
 
 func entrar_sala(c: Vector2i, venimos: Vector2i) -> void:
+	_pareja.antes_de_cambiar_sala()
 	actual = salas[c]
 	actual.visitada = true
 	_hud.posicion_actual = c
@@ -2257,8 +2264,9 @@ func entrar_sala_espejo(nuevas: Dictionary, pos: Vector2i, p1: Vector2, p2: Vect
 	create_tween().tween_property(_fundido, "color:a", 0.0, 0.07)
 
 
-## Invitado: se acabó la partida. Las victorias y las partidas jugadas también cuentan aquí.
-func acabar_espejo(gano: bool) -> void:
+## Invitado: se acabó la partida. Las victorias y las partidas jugadas también cuentan aquí
+## (una vez: "contar" es false si este final ya había llegado antes de un corte).
+func acabar_espejo(gano: bool, contar := true) -> void:
 	_selector.cerrar()
 	_barra.modo_sustituir = false
 	_barra.en_combate = false
@@ -2273,9 +2281,9 @@ func acabar_espejo(gano: bool) -> void:
 	_hud.jefe_espejo = []
 	Sonido.musica("")
 	Juego.novedades = []
-	if gano and not Juego.infinito:
+	if gano and contar and not Juego.infinito:
 		Juego.novedades += Progreso.al_ganar(Juego.mesa, Juego.extremo, Juego.personaje2, 0)
-	if not Juego.infinito:
+	if contar and not Juego.infinito:
 		Juego.novedades += Progreso.al_terminar_partida()
 	get_tree().paused = true
 	_aviso.text = ""

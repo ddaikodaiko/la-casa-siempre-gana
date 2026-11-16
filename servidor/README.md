@@ -167,8 +167,9 @@ el cooperativo online y no se abre ninguna conexión.
   de siempre, con el J2 manejado desde el otro ordenador. El invitado mueve a su jugador
   en local (responde al instante) y todo lo demás lo ve tal como lo dibuja el anfitrión.
 - Si a uno se le corta la conexión, la partida se para en los dos y el juego intenta volver
-  solo durante 20 segundos (el relé le guarda el sitio 25). Si el invitado no vuelve, el
-  anfitrión sigue en solitario; si se va el anfitrión, la partida se acaba.
+  solo durante 20 segundos (el relé le guarda el sitio 25). Si el invitado no vuelve (o al
+  anfitrión no le vuelve la conexión), el anfitrión sigue en solitario; si se va el
+  anfitrión, la partida se acaba.
 - Solo se juntan dos juegos con la misma versión (`Red.VERSION` en `scripts/red.gd`):
   súbela con cada versión del juego y cada vez que cambie lo que se cuentan
   (`scripts/pareja.gd`, `scripts/espejo.gd`).
@@ -198,7 +199,11 @@ Al terminar imprime la línea que hay que poner en `online.cfg`, sección `[mult
 propósito: las salas viven en memoria y los dos jugadores tienen que caer en la misma.
 
 Variables del relé (todas opcionales): `PORT`, `MAX_SALAS`, `GRACIA_MS` (lo que se guarda
-el sitio tras un corte) y los topes de mensajes; están al principio de `servidor.ts`.
+el sitio tras un corte), `SALA_VACIA_MS` (lo que aguanta una sala sin invitado, contando
+desde que se va el último), `MAX_ORDENES` (órdenes de sala por segundo y conexión; quien
+pasa de ahí se queda sin conexión) y los topes de mensajes; están al principio de
+`servidor.ts`. Una conexión sin tráfico 20 s se da por cortada (el juego manda un eco cada
+5 s, y él mismo da la suya por muerta a los 12 s sin nada del relé y vuelve con su llave).
 
 ## Pruebas
 

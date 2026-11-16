@@ -19,8 +19,11 @@
 //                     {"t":"sale"}                             (el otro se ha ido del todo)
 //                     {"t":"error","motivo":"no_existe"|"llena"|"version"|"peticion"|"lleno"}
 //
+// Más de MAX_ORDENES órdenes en un segundo cierran la conexión (1008): el juego manda muy pocas.
+//
 // Una conexión que se corta sin decir "salir" conserva su sitio GRACIA_MS: puede volver con
-// su llave y la partida sigue. Pasado ese tiempo es como si se hubiera ido.
+// su llave y la partida sigue. Pasado ese tiempo es como si se hubiera ido. Si vuelve antes
+// de que aquí se note el corte (su conexión vieja sigue medio abierta), la vieja se suelta.
 //
 // Todo vive en memoria: tiene que haber UNA sola instancia (en Cloud Run, --max-instances=1).
 
@@ -31,8 +34,10 @@ const MAX_SALAS = Number(process.env.MAX_SALAS ?? 200);
 const MAX_MENSAJE = 256 * 1024; // bytes por mensaje
 const MAX_POR_SEGUNDO = Number(process.env.MAX_POR_SEGUNDO ?? 400 * 1024); // bytes por conexión
 const GRACIA_MS = Number(process.env.GRACIA_MS ?? 25 * 1000); // lo que se guarda el sitio tras un corte
-const SALA_VACIA_MS = 10 * 60 * 1000; // una sala sin invitado caduca
+const SALA_VACIA_MS = Number(process.env.SALA_VACIA_MS ?? 10 * 60 * 1000); // una sala sin invitado caduca
 const SALA_MAX_MS = 6 * 60 * 60 * 1000; // y ninguna dura más que esto
+const MAX_ORDENES = Number(process.env.MAX_ORDENES ?? 10); // órdenes de texto por segundo y conexión
+const SIN_TRAFICO_S = 20; // el juego manda un eco cada 5 s: una conexión callada tanto está muerta
 const LETRAS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // sin 0/O, 1/I/L: se dictan de viva voz
 const LARGO_CODIGO = 4;
 
@@ -42,6 +47,7 @@ interface Conexion {
   sala: Sala | null;
   asiento: 0 | 1; // 0 el anfitrión, 1 el invitado
   bytes: number; // en el segundo en curso
+  ordenes: number; // también en el segundo en curso
   segundo: number;
 }
 
@@ -57,6 +63,7 @@ interface Sala {
   version: string;
   asientos: [Asiento, Asiento | null];
   creada: number;
+  libre: number; // desde cuándo no hay invitado (lo que cuenta para caducar)
 }
 
 type Orden =
@@ -133,6 +140,7 @@ function vaciarAsiento(sala: Sala, cual: 0 | 1): void {
     if (otro !== null && otro.ws !== null) otro.ws.data.sala = null;
   } else {
     sala.asientos[1] = null;
+    sala.libre = Date.now();
   }
   if (otro !== null) decir(otro.ws, { t: "sale" });
 }
@@ -180,7 +188,8 @@ function alRecibirOrden(ws: Socket, orden: Orden): void {
         return;
       }
       const anfitrion: Asiento = { ws, nombre: orden.nombre, llave: llaveNueva(), fuera: 0 };
-      const sala: Sala = { codigo: codigoNuevo(), version: orden.version, asientos: [anfitrion, null], creada: Date.now() };
+      const ahora = Date.now();
+      const sala: Sala = { codigo: codigoNuevo(), version: orden.version, asientos: [anfitrion, null], creada: ahora, libre: ahora };
       salas.set(sala.codigo, sala);
       ws.data.sala = sala;
       ws.data.asiento = 0;
@@ -213,12 +222,19 @@ function alRecibirOrden(ws: Socket, orden: Orden): void {
     case "volver": {
       dejarSala(ws);
       const sala = salas.get(orden.codigo);
-      const cual = sala === undefined ? -1 : sala.asientos.findIndex((a) => a !== null && a.ws === null && a.llave === orden.llave && orden.llave !== "");
+      const cual = sala === undefined || orden.llave === "" ? -1 : sala.asientos.findIndex((a) => a !== null && a.llave === orden.llave);
       if (sala === undefined || cual < 0) {
         decir(ws, { t: "error", motivo: "no_existe" });
         return;
       }
       const asiento = sala.asientos[cual] as Asiento;
+      const vieja = asiento.ws;
+      if (vieja !== null && vieja !== ws) {
+        // Aquí aún no se ha notado el corte: la conexión vieja se suelta sin dejar el sitio
+        // ni avisar a nadie (su cierre ya no toca la sala) y el sitio es de la nueva.
+        vieja.data.sala = null;
+        vieja.close(1000, "sustituida");
+      }
       asiento.ws = ws;
       asiento.fuera = 0;
       ws.data.sala = sala;
@@ -231,15 +247,27 @@ function alRecibirOrden(ws: Socket, orden: Orden): void {
   }
 }
 
-/** Un tope de bytes por segundo y conexión: el relé no es un túnel para lo que sea. */
-function pasaElTope(ws: Socket, bytes: number): boolean {
+function contarSegundo(ws: Socket): void {
   const ahora = Math.floor(Date.now() / 1000);
   if (ws.data.segundo !== ahora) {
     ws.data.segundo = ahora;
     ws.data.bytes = 0;
+    ws.data.ordenes = 0;
   }
+}
+
+/** Un tope de bytes por segundo y conexión: el relé no es un túnel para lo que sea. */
+function pasaElTope(ws: Socket, bytes: number): boolean {
+  contarSegundo(ws);
   ws.data.bytes += bytes;
   return ws.data.bytes <= MAX_POR_SEGUNDO;
+}
+
+/** Y uno de órdenes: el juego manda muy pocas, y así no se tantean códigos de sala a ráfagas. */
+function pasanLasOrdenes(ws: Socket): boolean {
+  contarSegundo(ws);
+  ws.data.ordenes += 1;
+  return ws.data.ordenes <= MAX_ORDENES;
 }
 
 const servidor = Bun.serve<Conexion, never>({
@@ -247,14 +275,20 @@ const servidor = Bun.serve<Conexion, never>({
   fetch(peticion, srv) {
     const ruta = new URL(peticion.url).pathname;
     if (ruta === "/salud") return Response.json({ ok: true, salas: salas.size });
-    if (srv.upgrade(peticion, { data: { sala: null, asiento: 0, bytes: 0, segundo: 0 } })) return undefined;
+    if (srv.upgrade(peticion, { data: { sala: null, asiento: 0, bytes: 0, ordenes: 0, segundo: 0 } })) return undefined;
     return new Response("La casa siempre gana: relé del cooperativo online.\n", { status: 200 });
   },
   websocket: {
     maxPayloadLength: MAX_MENSAJE,
-    idleTimeout: 120, // segundos sin tráfico; el juego manda un eco cada pocos segundos
+    // Sin tráfico se corta pronto: así un corte que no avisa (la conexión queda medio abierta)
+    // se nota aquí a tiempo de guardarle el sitio y de que el otro espere.
+    idleTimeout: SIN_TRAFICO_S,
     message(ws, mensaje) {
       if (typeof mensaje === "string") {
+        if (!pasanLasOrdenes(ws)) {
+          ws.close(1008, "demasiadas órdenes");
+          return;
+        }
         const orden = leerOrden(mensaje);
         if (orden === null) decir(ws, { t: "error", motivo: "peticion" });
         else alRecibirOrden(ws, orden);
@@ -282,8 +316,9 @@ setInterval(() => {
       if (asiento !== null && asiento.ws === null && ahora - asiento.fuera > GRACIA_MS) vaciarAsiento(sala, cual);
     }
     if (!salas.has(sala.codigo)) continue;
-    const vieja = ahora - sala.creada;
-    if (vieja > SALA_MAX_MS || (sala.asientos[1] === null && vieja > SALA_VACIA_MS)) {
+    // La vacía cuenta desde que se fue el último invitado, no desde que se creó.
+    const vacia = sala.asientos[1] === null && ahora - sala.libre > SALA_VACIA_MS;
+    if (ahora - sala.creada > SALA_MAX_MS || vacia) {
       sala.asientos[1]?.ws?.close(1000, "sala caducada");
       sala.asientos[0].ws?.close(1000, "sala caducada");
       if (salas.has(sala.codigo)) vaciarAsiento(sala, 0);

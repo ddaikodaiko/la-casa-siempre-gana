@@ -15,6 +15,17 @@ extends RefCounted
 enum Tipo { GRUPO, SPRITE, TEXTO, LINEA, ZONA }
 
 const ESCALA_POS := 16.0  # las posiciones viajan en dieciseisavos de píxel
+## Lo más hondo que se copia, contando desde la raíz: lo más hondo del juego son los precios
+## de la tienda (Recogibles > artículo > grupo del precio > número y moneda).
+const PROFUNDIDAD := 3
+# Topes del invitado: lo que llega de fuera nunca crece sin fin ni pide imágenes enormes.
+const TOPE_NODOS := 3000
+const TOPE_TEXTURAS := 512  # el anfitrión las numera desde 1 en cada reiniciar()
+const TOPE_PNG := 262144  # bytes
+const TOPE_LADO_PNG := 1024  # píxeles
+const TOPE_TEXTO := 256  # letras de un Label
+const TOPE_PUNTOS := 256  # de una línea
+const MATERIALES := [0, 1, 10 + Enemigo.Rango.RARO, 10 + Enemigo.Rango.ELITE]  # ver _material_de()
 # Casillas de lo que se compara de cada nodo (las mismas para todos, luego las de su tipo).
 const C_VISIBLE := 0
 const C_ROT := 1
@@ -47,7 +58,7 @@ func capturar(raices: Array) -> Array:
 	_texturas_nuevas = []
 	for i in raices.size():
 		for hijo in raices[i].get_children():
-			_capturar_nodo(hijo, -(i + 1), cambiados, movidos, vistos)
+			_capturar_nodo(hijo, -(i + 1), 1, cambiados, movidos, vistos)
 	var fuera := PackedInt32Array()
 	for rid in _ultimo.keys():
 		if not vistos.has(rid):
@@ -56,7 +67,7 @@ func capturar(raices: Array) -> Array:
 	return [_texturas_nuevas, cambiados, movidos.data_array, fuera]
 
 
-func _capturar_nodo(n: Node, padre: int, cambiados: Array, movidos: StreamPeerBuffer, vistos: Dictionary) -> void:
+func _capturar_nodo(n: Node, padre: int, hondo: int, cambiados: Array, movidos: StreamPeerBuffer, vistos: Dictionary) -> void:
 	if n.is_queued_for_deletion() or not (n is CanvasItem):
 		return
 	var tipo := _tipo_de(n)
@@ -96,8 +107,9 @@ func _capturar_nodo(n: Node, padre: int, cambiados: Array, movidos: StreamPeerBu
 		antes[0] = x
 		antes[1] = y
 		antes[2] = cuadro
-	for hijo in n.get_children():
-		_capturar_nodo(hijo, rid, cambiados, movidos, vistos)
+	if hondo < PROFUNDIDAD:  # más abajo el invitado no lo admite
+		for hijo in n.get_children():
+			_capturar_nodo(hijo, rid, hondo + 1, cambiados, movidos, vistos)
 
 
 func _tipo_de(n: Node) -> int:
@@ -166,25 +178,44 @@ func _textura_de(t: Texture2D) -> int:
 
 
 # ------------------------------------------------------------ invitado
-var _nodos := {}  # rid -> nodo de pega
+# Lo que llega viene de otro ordenador: se mira todo (tipos, rangos, topes) y lo que no
+# cuadra se ignora sin romper nada.
+var _nodos := {}  # rid -> nodo de pega (con su tipo y su profundidad en metas)
 var _tex_por_numero := {}  # número -> Texture2D
 
+## El tipo de cada casilla: las comunes (C_VISIBLE...) y, detrás, las de cada tipo de nodo.
+const FORMA_COMUN := [TYPE_BOOL, TYPE_FLOAT, TYPE_VECTOR2, TYPE_COLOR, TYPE_COLOR, TYPE_INT, TYPE_INT]
+const FORMA_TIPO := {
+	Tipo.GRUPO: [],
+	Tipo.SPRITE: [TYPE_INT, TYPE_INT, TYPE_INT, TYPE_BOOL, TYPE_BOOL, TYPE_VECTOR2, TYPE_BOOL, TYPE_INT],
+	Tipo.TEXTO: [TYPE_STRING, TYPE_VECTOR2, TYPE_INT, TYPE_COLOR, TYPE_INT, TYPE_INT, TYPE_COLOR, TYPE_BOOL],
+	Tipo.LINEA: [TYPE_PACKED_VECTOR2_ARRAY, TYPE_FLOAT, TYPE_COLOR, TYPE_INT, TYPE_INT, TYPE_INT],
+	Tipo.ZONA: [TYPE_FLOAT, TYPE_FLOAT, TYPE_FLOAT],
+}
+const FIRMA_PNG := [137, 80, 78, 71, 13, 10, 26, 10]
 
-## Borra todos los nodos de pega (al cambiar de sala o salir de la partida).
+
+## Borra todos los nodos de pega (al cambiar de sala o salir de la partida). Las texturas
+## también: el anfitrión llama a reiniciar() antes de cada cosa que aquí acaba en vaciar()
+## (A_SALA, A_EMPEZAR) y vuelve a mandarlas; tras el final o la portada no hace falta ninguna.
 func vaciar() -> void:
 	for n in _nodos.values():
 		if is_instance_valid(n):
 			n.queue_free()
 	_nodos.clear()
+	_tex_por_numero.clear()
 
 
 func aplicar(datos: Array, raices: Array) -> void:
-	if datos.size() < 4:
+	if datos.size() < 4 or not (datos[0] is Array) or not (datos[1] is Array) or not (datos[2] is PackedByteArray) \
+			or not (datos[3] is PackedInt32Array):
 		return
 	for t in datos[0]:
-		_registrar_textura(t)
+		if t is Array:
+			_registrar_textura(t)
 	for c in datos[1]:
-		_aplicar_cambio(c, raices)
+		if c is Array:
+			_aplicar_cambio(c, raices)
 	var movidos := StreamPeerBuffer.new()
 	movidos.data_array = datos[2]
 	while movidos.get_available_bytes() >= 9:
@@ -203,38 +234,78 @@ func aplicar(datos: Array, raices: Array) -> void:
 
 
 func _registrar_textura(t: Array) -> void:
-	var ruta := String(t[1])
+	if t.size() < 3 or not (t[0] is int) or not (t[1] is String) or not (t[2] is PackedByteArray):
+		return
+	var numero: int = t[0]
+	if numero < 1 or numero > TOPE_TEXTURAS:
+		return
+	var ruta: String = t[1]
 	if ruta != "":
 		# Solo imágenes del propio juego: lo que llega de fuera no elige qué se carga.
-		if ruta.begins_with("res://assets/") and ResourceLoader.exists(ruta, "Texture2D"):
-			_tex_por_numero[int(t[0])] = load(ruta)
+		if ruta.begins_with("res://assets/") and not ruta.contains("..") and ResourceLoader.exists(ruta, "Texture2D"):
+			var tex = load(ruta)
+			if tex is Texture2D:
+				_tex_por_numero[numero] = tex
 		return
 	var png: PackedByteArray = t[2]
-	if png.is_empty() or png.size() > 262144:
+	if png.is_empty() or png.size() > TOPE_PNG or not _png_cabe(png):
 		return
 	var imagen := Image.new()
 	if imagen.load_png_from_buffer(png) == OK:
-		_tex_por_numero[int(t[0])] = ImageTexture.create_from_image(imagen)
+		_tex_por_numero[numero] = ImageTexture.create_from_image(imagen)
+
+
+## El tamaño que dice la cabecera del PNG (su IHDR va siempre primero), leído antes de
+## descomprimir nada: una imagen enorme ni se abre.
+static func _png_cabe(png: PackedByteArray) -> bool:
+	if png.size() < 24 or png.slice(0, 8) != PackedByteArray(FIRMA_PNG) or png.slice(12, 16).get_string_from_ascii() != "IHDR":
+		return false
+	var ancho := (png[16] << 24) | (png[17] << 16) | (png[18] << 8) | png[19]
+	var alto := (png[20] << 24) | (png[21] << 16) | (png[22] << 8) | png[23]
+	return ancho >= 1 and alto >= 1 and ancho <= TOPE_LADO_PNG and alto <= TOPE_LADO_PNG
 
 
 func _aplicar_cambio(c: Array, raices: Array) -> void:
-	var rid := int(c[0])
-	var tipo := int(c[2])
-	var mascara := int(c[6])
+	if c.size() < 8 or not (c[7] is Array):
+		return
+	for i in 7:
+		if not (c[i] is int):
+			return
+	var rid: int = c[0]
+	var padre_rid: int = c[1]
+	var tipo: int = c[2]
+	var mascara: int = c[6]
 	var valores: Array = c[7]
+	if tipo < Tipo.GRUPO or tipo > Tipo.ZONA:
+		return
+	var donde := Vector2(c[3], c[4]) / ESCALA_POS
 	var n = _nodos.get(rid)
 	if n == null or not is_instance_valid(n):
-		if mascara != -1:
-			return  # un cambio de algo que no llegó a crearse: se ignora
-		var padre = raices[-int(c[1]) - 1] if int(c[1]) < 0 else _nodos.get(int(c[1]))
-		if padre == null or not is_instance_valid(padre):
+		if mascara != -1 or _nodos.size() >= TOPE_NODOS:
+			return  # un cambio de algo que no llegó a crearse (o ya hay demasiados): se ignora
+		# El padre: una raíz, o un nodo ya creado que no esté tan hondo como para no tener hijos.
+		var padre: Node = null
+		var hondo := 1
+		if padre_rid < 0:
+			if -padre_rid <= raices.size():
+				padre = raices[-padre_rid - 1]
+		else:
+			var de = _nodos.get(padre_rid)
+			if de != null and is_instance_valid(de):
+				padre = de
+				hondo = int(de.get_meta(&"hondo", PROFUNDIDAD)) + 1
+		if padre == null or hondo > PROFUNDIDAD:
 			return
 		n = _crear(tipo)
+		n.set_meta(&"tipo", tipo)
+		n.set_meta(&"hondo", hondo)
 		_nodos[rid] = n
 		padre.add_child(n)
-		_mover(n, Vector2(c[3], c[4]) / ESCALA_POS, int(c[5]), true)
+		_mover(n, donde, c[5], true)
+	elif int(n.get_meta(&"tipo", -1)) != tipo:
+		return  # el mismo número con otro tipo de nodo: no cuadra
 	else:
-		_mover(n, Vector2(c[3], c[4]) / ESCALA_POS, int(c[5]), false)
+		_mover(n, donde, c[5], false)
 	var k := 0
 	for i in 32:
 		if mascara == -1 and i >= valores.size():
@@ -243,8 +314,30 @@ func _aplicar_cambio(c: Array, raices: Array) -> void:
 			continue
 		if k >= valores.size():
 			break
-		_poner(n, tipo, i, valores[k])
+		if _de_su_tipo(tipo, i, valores[k]):
+			_poner(n, tipo, i, valores[k])
 		k += 1
+
+
+## La casilla trae el tipo que le toca (un entero vale donde van decimales) y nada infinito.
+func _de_su_tipo(tipo: int, casilla: int, v: Variant) -> bool:
+	var forma: Array = FORMA_COMUN if casilla < C_TIPO else FORMA_TIPO[tipo]
+	var i := casilla if casilla < C_TIPO else casilla - C_TIPO
+	if i >= forma.size():
+		return false
+	match int(forma[i]):
+		TYPE_FLOAT:
+			return (v is float or v is int) and is_finite(float(v))
+		TYPE_VECTOR2:
+			return v is Vector2 and is_finite(v.x) and is_finite(v.y)
+		TYPE_PACKED_VECTOR2_ARRAY:
+			if not (v is PackedVector2Array) or v.size() > TOPE_PUNTOS:
+				return false
+			for punto in v:
+				if not is_finite(punto.x) or not is_finite(punto.y):
+					return false
+			return true
+	return typeof(v) == int(forma[i])
 
 
 func _crear(tipo: int) -> CanvasItem:
@@ -264,21 +357,24 @@ func _mover(n: CanvasItem, p: Vector2, cuadro: int, de_golpe: bool) -> void:
 		n.destino = p
 		if de_golpe:
 			n.position = p
-		if cuadro < n.hframes * n.vframes:
+		if cuadro >= 0 and cuadro < n.hframes * n.vframes:
 			n.frame = cuadro
 	else:
 		n.position = p
 
 
+## Cada valor ya trae su tipo (ver _de_su_tipo); aquí se acota a lo que tiene sentido.
 func _poner(n: CanvasItem, tipo: int, casilla: int, v: Variant) -> void:
 	match casilla:
-		C_VISIBLE: n.visible = bool(v)
+		C_VISIBLE: n.visible = v
 		C_ROT: n.rotation = float(v)
-		C_ESCALA: n.scale = v
+		C_ESCALA: n.scale = (v as Vector2).clamp(Vector2(-64, -64), Vector2(64, 64))
 		C_COLOR: n.modulate = v
 		C_COLOR_PROPIO: n.self_modulate = v
-		C_Z: n.z_index = int(v)
-		C_MATERIAL: n.material = _material_numero(int(v))
+		C_Z: n.z_index = clampi(v, RenderingServer.CANVAS_ITEM_Z_MIN, RenderingServer.CANVAS_ITEM_Z_MAX)
+		C_MATERIAL:
+			if MATERIALES.has(v):
+				n.material = _material_numero(v)
 		_: _poner_de_tipo(n, tipo, casilla - C_TIPO, v)
 
 
@@ -287,46 +383,47 @@ func _poner_de_tipo(n: CanvasItem, tipo: int, i: int, v: Variant) -> void:
 		Tipo.SPRITE:
 			var s: Pega = n
 			match i:
-				0: s.texture = _tex_por_numero.get(int(v))
-				1: s.hframes = maxi(int(v), 1)
-				2: s.vframes = maxi(int(v), 1)
-				3: s.flip_h = bool(v)
-				4: s.flip_v = bool(v)
-				5: s.offset = v
-				6: s.centered = bool(v)
+				0: s.texture = _tex_por_numero.get(v)
+				1: s.hframes = clampi(v, 1, 256)
+				2: s.vframes = clampi(v, 1, 256)
+				3: s.flip_h = v
+				4: s.flip_v = v
+				5: s.offset = (v as Vector2).clamp(Vector2(-4096, -4096), Vector2(4096, 4096))
+				6: s.centered = v
 				7:
-					s.estela = int(v)
+					s.estela = clampi(v, 0, 2)
 					s.queue_redraw()
 		Tipo.TEXTO:
 			var l: Label = n
 			match i:
-				0: l.text = String(v)
-				1: l.size = v
-				2: l.horizontal_alignment = int(v)
+				0: l.text = (v as String).left(TOPE_TEXTO)
+				1: l.size = (v as Vector2).clamp(Vector2.ZERO, Vector2(1280, 720))
+				2: l.horizontal_alignment = clampi(v, HORIZONTAL_ALIGNMENT_LEFT, HORIZONTAL_ALIGNMENT_FILL) as HorizontalAlignment
 				3: l.add_theme_color_override(&"font_color", v)
-				4: l.add_theme_font_size_override(&"font_size", int(v))
-				5: l.add_theme_constant_override(&"outline_size", int(v))
+				4: l.add_theme_font_size_override(&"font_size", clampi(v, 1, 64))
+				5: l.add_theme_constant_override(&"outline_size", clampi(v, 0, 16))
 				6: l.add_theme_color_override(&"font_outline_color", v)
 				7:
-					if bool(v):
+					if v:
 						l.add_theme_font_override(&"font", Juego.fuente_grande)
 		Tipo.LINEA:
 			var li: Line2D = n
 			match i:
 				0: li.points = v
-				1: li.width = float(v)
+				1: li.width = clampf(v, 0.0, 64.0)
 				2: li.default_color = v
-				3: li.joint_mode = int(v)
-				4: li.begin_cap_mode = int(v)
-				5: li.end_cap_mode = int(v)
+				3: li.joint_mode = clampi(v, Line2D.LINE_JOINT_SHARP, Line2D.LINE_JOINT_ROUND) as Line2D.LineJointMode
+				4: li.begin_cap_mode = clampi(v, Line2D.LINE_CAP_NONE, Line2D.LINE_CAP_ROUND) as Line2D.LineCapMode
+				5: li.end_cap_mode = clampi(v, Line2D.LINE_CAP_NONE, Line2D.LINE_CAP_ROUND) as Line2D.LineCapMode
 		Tipo.ZONA:
 			var z: ZonaPega = n
 			match i:
-				0: z._radio = float(v)
-				1: z._retardo = maxf(float(v), 0.001)
-				2: z._duracion = float(v)
+				0: z._radio = clampf(v, 0.0, 640.0)
+				1: z._retardo = clampf(v, 0.001, 30.0)
+				2: z._duracion = clampf(v, 0.0, 30.0)
 
 
+## Solo los de MATERIALES (ver _material_de): otro número ni crea nada ni se guarda.
 func _material_numero(numero: int) -> Material:
 	if numero == 1:
 		if _material_suma == null:

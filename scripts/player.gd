@@ -193,8 +193,9 @@ func _empezar_voltereta(direccion: Vector2) -> void:
 	_rodados.clear()
 	Juego.ultima_voltereta = Juego.tiempo_partida
 	Sonido.tocar("voltereta", randf_range(0.95, 1.1))
-	# As en la Manga: al rodar sueltas naipes en todas direcciones.
-	if Juego.stat("voltereta_bala") > 0.0 and ataques != null:
+	# As en la Manga: al rodar sueltas naipes en todas direcciones. En el invitado online no:
+	# los suelta el anfitrión con su muñeco (y se ven aquí en espejo).
+	if Juego.stat("voltereta_bala") > 0.0 and ataques != null and not Red.espejo:
 		ataques.ataque_suelto("nova", 3.0, 6, position)
 	voltereta.emit(_rodar_dir)
 
@@ -211,7 +212,11 @@ func _rodar(delta: float) -> void:
 	if _rodar_t <= 0.0:
 		_rodar_t = 0.0
 		_aterrizaje = 1.0
-		_enfriamiento = VOLTERETA_ENFRIAMIENTO * (1.0 - clampf(Juego.stat("voltereta_rapida"), 0.0, 0.8))
+		_enfriamiento = _enfriamiento_tras_rodar()
+
+
+func _enfriamiento_tras_rodar() -> float:
+	return VOLTERETA_ENFRIAMIENTO * (1.0 - clampf(Juego.stat("voltereta_rapida"), 0.0, 0.8))
 
 
 func _mirar_pelos() -> void:
@@ -403,6 +408,7 @@ func _mover_remoto(delta: float) -> void:
 	velocity = Vector2.ZERO
 	arrastre_visto = arrastre  # lo que tira de él aquí se lo cuenta el anfitrión al invitado
 	arrastre = Vector2.ZERO
+	_enfriamiento = maxf(_enfriamiento - delta, 0.0)  # la cuenta de local, para no rodar de más
 	if caido:
 		return
 	if rodando():
@@ -413,6 +419,7 @@ func _mover_remoto(delta: float) -> void:
 		if _rodar_t <= 0.0:
 			_rodar_t = 0.0
 			_aterrizaje = 1.0
+			_enfriamiento = _enfriamiento_tras_rodar()
 	if position.distance_to(remoto_pos) > REMOTO_SALTO:
 		position = remoto_pos
 	else:
@@ -445,6 +452,12 @@ func rodar_remoto(direccion: Vector2, con_sonido: bool) -> void:
 
 func direccion_rodar() -> Vector2:
 	return _rodar_dir
+
+
+## Lo que le falta para poder rodar otra vez, con la misma cuenta que en local (lo que queda
+## de voltereta y el enfriamiento de después). El anfitrión lo mira antes de hacer rodar al J2.
+func falta_para_rodar() -> float:
+	return _rodar_t + _enfriamiento_tras_rodar() if rodando() else _enfriamiento
 
 
 ## Lo que queda de parpadeo tras un golpe (el anfitrión se lo cuenta al invitado).

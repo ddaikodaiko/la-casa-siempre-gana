@@ -11,7 +11,8 @@ extends Node
 signal estado_cambiado  # conexión, sala o compañero: la pantalla se repinta
 signal mensaje(m: Array)  # lo que manda el otro jugador
 signal error_sala(motivo: String)  # "no_existe", "llena", "version", "lleno", "sin_conexion"
-signal companero_fuera  # el otro se ha ido (o se ha caído la conexión con la partida en marcha)
+## El otro se ha ido (motivo "") o me he quedado yo sin conexión del todo ("sin_conexion").
+signal companero_fuera(motivo: String)
 signal companero_vuelve  # el otro ha vuelto tras un corte: el anfitrión se lo manda todo otra vez
 
 enum Estado { APAGADO, CONECTANDO, CONECTADO, EN_SALA, VOLVIENDO }
@@ -19,13 +20,18 @@ enum Estado { APAGADO, CONECTANDO, CONECTADO, EN_SALA, VOLVIENDO }
 const RUTAS_CONFIG := ["user://online.cfg", "res://online.cfg"]
 ## La versión del juego y, detrás, la de lo que se cuentan los dos ordenadores. Solo se juntan
 ## dos iguales: súbela con cada versión del juego y con cada cambio en pareja.gd o espejo.gd.
-const VERSION := "1.9-1"
+const VERSION := "1.9-2"
 const TIEMPO_CONEXION := 10.0
 const ECO_CADA := 5.0  # mantiene viva la conexión y mide el retraso
+## Sin nada del relé en este tiempo (ni el eco) la conexión está muerta aunque no lo diga.
+const SILENCIO_MAX := 12.0
 
 const COMPRIMIR_DESDE := 200  # bytes: por debajo no merece la pena
 const TOPE_MENSAJE := 240 * 1024  # el relé corta la conexión con mensajes de más de 256 KB
 const TOPE_DESCOMPRIMIDO := 4 * 1024 * 1024
+## Lo del invitado son peticiones diminutas (dónde está, qué pulsa): lo que pase de esto no lo es.
+const TOPE_DEL_INVITADO := 16 * 1024
+const PAQUETES_POR_FOTOGRAMA := 64  # lo que no quepa se lee en el siguiente: nada atasca un fotograma
 const RECONECTAR_SEG := 20.0  # lo que se intenta volver tras un corte (el relé guarda el sitio 25 s)
 const RECONECTAR_CADA := 2.0
 
@@ -60,6 +66,9 @@ var retraso_ms := -1
 ## El otro se ha quedado sin conexión y el relé le guarda el sitio (o soy yo el que vuelve).
 var esperando := false
 var bytes_enviados := 0  # para las pruebas y para vigilar el tráfico
+## Un mensaje no ha salido (no cabía o el envío ha fallado): lo que tiene el otro ya no
+## cuadra. El anfitrión lo mira y se lo vuelve a contar todo (ver pareja.gd).
+var falta_algo := false
 
 var _llave := ""  # la da el relé: con ella se recupera el sitio tras un corte
 var _t_volver := 0.0
@@ -67,6 +76,7 @@ var _t_reintento := 0.0
 var _ws: WebSocketPeer
 var _t_conexion := 0.0
 var _t_eco := 0.0
+var _t_silencio := 0.0
 var _al_conectar: Callable
 
 
@@ -117,6 +127,7 @@ func salir() -> void:
 	anfitrion = false
 	retraso_ms = -1
 	esperando = false
+	falta_algo = false
 	_llave = ""
 	estado_cambiado.emit()
 
@@ -129,9 +140,12 @@ func enviar(m: Array) -> void:
 	var paquete := empaquetar(m)
 	if paquete.size() > TOPE_MENSAJE:
 		push_warning("Red: mensaje demasiado grande (%d bytes), no se manda" % paquete.size())
+		falta_algo = true
+		return
+	if _ws.send(paquete) != OK:
+		falta_algo = true
 		return
 	bytes_enviados += paquete.size()
-	_ws.send(paquete)
 
 
 static func empaquetar(m: Array) -> PackedByteArray:
@@ -148,16 +162,19 @@ static func empaquetar(m: Array) -> PackedByteArray:
 	return paquete
 
 
-## Lo contrario de empaquetar. Devuelve null si lo que llega no tiene sentido.
-static func desempaquetar(paquete: PackedByteArray) -> Variant:
+## Lo contrario de empaquetar. Devuelve null si lo que llega no tiene sentido o, ya
+## descomprimido, pasa de tope.
+static func desempaquetar(paquete: PackedByteArray, tope := TOPE_DESCOMPRIMIDO) -> Variant:
 	if paquete.size() < 2:
 		return null
 	var crudo: PackedByteArray
 	if paquete[0] == 0:
+		if paquete.size() - 1 > tope:
+			return null
 		crudo = paquete.slice(1)
 	elif paquete[0] == 1 and paquete.size() > 5:
 		var largo := paquete.decode_u32(1)
-		if largo <= 0 or largo > TOPE_DESCOMPRIMIDO:
+		if largo <= 0 or largo > tope:
 			return null
 		crudo = paquete.slice(5).decompress(largo, FileAccess.COMPRESSION_ZSTD)
 		if crudo.size() != largo:
@@ -189,6 +206,7 @@ func _abrir() -> bool:
 	if _ws.connect_to_url(servidor) != OK:
 		_ws = null
 		return false
+	_t_silencio = 0.0
 	return true
 
 
@@ -216,7 +234,15 @@ func _process(delta: float) -> void:
 			elif estado == Estado.VOLVIENDO and _al_conectar.is_valid():
 				_al_conectar.call()
 				_al_conectar = Callable()
+			_t_silencio += real  # antes de leer: tras un tirón largo, lo que espera en cola cuenta
 			_leer()
+			if _ws == null:
+				return
+			if estado == Estado.EN_SALA and _t_silencio > SILENCIO_MAX:
+				# Ni el eco: la conexión está muerta aunque no se haya cerrado. Se vuelve con la llave.
+				_ws.close()
+				_caer("sin_conexion")
+				return
 			_t_eco += real
 			if _t_eco >= ECO_CADA:
 				_t_eco = 0.0
@@ -226,14 +252,19 @@ func _process(delta: float) -> void:
 
 
 func _leer() -> void:
-	while _ws != null and _ws.get_available_packet_count() > 0:
+	# El anfitrión no se traga nada grande del invitado: lo suyo legítimo cabe de sobra en el tope.
+	var tope := TOPE_DEL_INVITADO if anfitrion else TOPE_DESCOMPRIMIDO
+	var leidos := 0
+	while _ws != null and _ws.get_available_packet_count() > 0 and leidos < PAQUETES_POR_FOTOGRAMA:
+		leidos += 1
+		_t_silencio = 0.0
 		var paquete := _ws.get_packet()
 		if _ws.was_string_packet():
 			var datos = JSON.parse_string(paquete.get_string_from_utf8())
 			if datos is Dictionary:
 				_al_ordenar(datos)
 			continue
-		var m = desempaquetar(paquete)
+		var m = desempaquetar(paquete, tope)
 		if m is Array and not m.is_empty() and m[0] is int:
 			mensaje.emit(m)
 
@@ -245,7 +276,7 @@ func _seguir_volviendo(real: float) -> void:
 		var habia := hay_companero
 		salir()
 		if habia:
-			companero_fuera.emit()
+			companero_fuera.emit("sin_conexion")
 		else:
 			error_sala.emit("sin_conexion")
 		return
@@ -294,15 +325,21 @@ func _al_ordenar(d: Dictionary) -> void:
 			if not anfitrion:
 				salir()  # sin anfitrión no hay sala
 			if habia:
-				companero_fuera.emit()
+				companero_fuera.emit("")
 		"eco":
 			retraso_ms = maxi(Time.get_ticks_msec() - int(d.get("n", 0)), 0)
 		"error":
+			if estado == Estado.VOLVIENDO:
+				# Volviendo tras un corte, un "no" puede ser de un relé que aún no ha soltado mi
+				# conexión vieja: se reintenta como cualquier otro fallo hasta RECONECTAR_SEG.
+				_ws.close()
+				_ws = null
+				return
 			var motivo := String(d.get("motivo", "sin_conexion"))
 			var habia := hay_companero
 			salir()
-			if habia:  # volvía tras un corte y la sala ya no está
-				companero_fuera.emit()
+			if habia:
+				companero_fuera.emit("sin_conexion")
 			else:
 				error_sala.emit(motivo)
 			return
@@ -323,6 +360,6 @@ func _caer(motivo: String) -> void:
 	var estaba := estado
 	salir()
 	if habia:
-		companero_fuera.emit()
+		companero_fuera.emit("sin_conexion")
 	elif estaba != Estado.APAGADO:
 		error_sala.emit(motivo)

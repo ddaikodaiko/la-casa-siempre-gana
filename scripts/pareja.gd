@@ -43,8 +43,36 @@ const CICLO := 12  # [_, plan]
 const PASO := 13  # [_, paso]
 const CICLO_FIN := 14
 
+## Lo que puede llegar en cada efecto del jugo (Jugo.REENVIABLES), argumento a argumento: su
+## tipo y, si es un número o un texto, entre qué valores. Lo de fuera de rango se acota, así
+## ni una cámara lenta eterna ni un millón de trozos; lo de otro tipo no se hace.
+const ARGS_FX := {
+	&"parar": [[TYPE_FLOAT, 0.0, 0.2], [TYPE_BOOL]],
+	&"sacudir": [[TYPE_FLOAT, 0.0, 12.0], [TYPE_VECTOR2]],
+	&"chispas": [[TYPE_VECTOR2], [TYPE_VECTOR2], [TYPE_BOOL]],
+	&"trozos": [[TYPE_VECTOR2], [TYPE_INT, 0, 24], [TYPE_FLOAT, 0.0, 3.0]],
+	&"polvo": [[TYPE_VECTOR2], [TYPE_INT, 0, 12], [TYPE_VECTOR2]],
+	&"humo": [[TYPE_VECTOR2], [TYPE_INT, 0, 8], [TYPE_FLOAT, 0.0, 64.0]],
+	&"cine": [[TYPE_FLOAT, 0.0, 3.0], [TYPE_VECTOR2], [TYPE_FLOAT, 0.0, 0.2]],
+	&"golpe_jugador": [],
+	&"camara_lenta": [[TYPE_FLOAT, 0.0, 1.5], [TYPE_FLOAT, 0.1, 1.0]],
+	&"destello": [[TYPE_COLOR], [TYPE_FLOAT, 0.0, 0.6]],
+	&"al_disparar": [[TYPE_VECTOR2], [TYPE_VECTOR2], [TYPE_FLOAT, 0.0, 4.0]],
+	&"al_impactar": [[TYPE_VECTOR2], [TYPE_VECTOR2], [TYPE_BOOL]],
+	&"al_explotar": [[TYPE_VECTOR2], [TYPE_FLOAT, 0.0, 400.0]],
+	&"aviso_nacimiento": [[TYPE_VECTOR2], [TYPE_FLOAT, 0.0, 6.0]],
+	&"roce": [[TYPE_VECTOR2]],
+	&"remate": [[TYPE_VECTOR2]],
+	&"oleada": [[TYPE_INT, 0, 99], [TYPE_INT, 0, 99]],
+	&"onda": [[TYPE_VECTOR2]],
+	&"numero_dano": [[TYPE_VECTOR2], [TYPE_FLOAT, 0.0, 999999.0], [TYPE_COLOR], [TYPE_BOOL]],
+	&"texto": [[TYPE_VECTOR2], [TYPE_STRING, 0, 64], [TYPE_COLOR], [TYPE_BOOL]],
+}
+
 const TIC := 1.0 / 20.0  # lo que manda el anfitrión, veces por segundo
 const YO := 1.0 / 30.0  # y el invitado
+const HOLGURA_RODAR := 0.15  # s: el retraso de la red puede juntar dos volteretas buenas
+const REHACER_CADA := 1.0  # s: si algo no cabe nunca, no se cuenta todo otra vez en cada fotograma
 const TECLAS_PANEL := [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_ESCAPE]
 const ZONA := Rect2(-24, -24, 688, 352)  # donde puede estar un jugador (con margen para las puertas)
 ## Lo de Juego que el invitado tiene que ver igual. tiempo_partida solo viaja al empezar.
@@ -76,6 +104,11 @@ var _arrastre := Vector2.ZERO  # invitado: lo que tira de su jugador (lo dice el
 var _raton = null  # invitado: dónde tiene el ratón sobre un panel del anfitrión
 var _rodaba_j1 := false
 var _panel_vars := {}  # nombres de las variables que se copian de cada panel
+var _paneles_antes := {}  # invitado: panel -> cómo estaba antes de volverlo un dibujo
+var _paneles_alla := {}  # invitado: panel -> si el anfitrión lo tiene abierto
+var _gano := false  # anfitrión: cómo acabó la partida (por si hay que volver a contarlo)
+var _fin_contado := false  # invitado: el final de esta partida ya ha sumado en el progreso
+var _t_rehacer := 0.0
 
 
 func _ready() -> void:
@@ -85,6 +118,9 @@ func _ready() -> void:
 	red.companero_vuelve.connect(_al_volver_companero)
 	red.estado_cambiado.connect(_al_cambiar_red)
 	red.error_sala.connect(func(_motivo: String) -> void: _soltar())
+	# Al abrirse o cerrarse el menú o el final, el reenvío cambia en el acto (no al fotograma siguiente).
+	p._menu.visibility_changed.connect(_poner_reenvio)
+	p._pantalla.visibility_changed.connect(_poner_reenvio)
 	personaje_invitado = PersonajesDB.PERSONAJES.keys()[0]
 
 
@@ -155,6 +191,7 @@ func al_arrancar() -> void:
 
 
 func _empezar_a_contar() -> void:
+	red.falta_algo = false  # lo que no llegara antes ya da igual: va todo
 	espejo.reiniciar()
 	_ultimo = {}
 	pausa_remota = false
@@ -164,21 +201,30 @@ func _empezar_a_contar() -> void:
 	red.enviar([A_EMPEZAR, datos, red.companero])
 
 
+## main va a cambiar de sala: lo último de la que se deja (sus sonidos, lo que ha cambiado)
+## sale ya, con su número. Lo que pase al construir la nueva viaja detrás de su A_SALA.
+func antes_de_cambiar_sala() -> void:
+	if jugando_anfitrion() and n_sala > 0:
+		_mandar_tic()
+
+
 ## main acaba de entrar en una sala (o de volver a ella).
 func al_entrar_sala(venimos: Vector2i) -> void:
 	if not jugando_anfitrion():
 		return
-	if n_sala > 0:
-		_mandar_tic()  # lo último de la sala que se deja (sus sonidos, lo que ha cambiado)
 	n_sala += 1
 	espejo.reiniciar()
 	p.jugador2.remoto_pos = p.jugador2.position
 	red.enviar([A_SALA, n_sala, p.actual.pos, p.salas, venimos, p.jugador.position, p.jugador2.position, Juego.piso])
+	# El invitado construye la sala de cero (puertas abiertas, sin jefe...): el estado entero
+	# vuelve a viajar en el tic siguiente, con lo que se ha apuntado al construirla.
+	_ultimo = {}
 
 
 func al_acabar(gano: bool) -> void:
 	if not jugando_anfitrion():
 		return
+	_gano = gano
 	_mandar_tic()  # lo último que ha pasado, antes del final
 	red.enviar([A_FIN, gano])
 
@@ -199,13 +245,20 @@ func al_ir_al_menu() -> bool:
 
 # ------------------------------------------------------------ cada fotograma
 func _process(delta: float) -> void:
-	Red.reenviando = jugando_anfitrion() and not p._menu.visible and not cortado()
+	Red.eco = true  # lo apaga un momento quien hace algo que el invitado ya ha hecho: nunca se queda así
+	_poner_reenvio()
 	Red.espejo = jugando_invitado()
 	if not en_partida:
 		return
 	var real := delta / maxf(Engine.time_scale, 0.001)
 	if red.anfitrion:
 		_llevar_pausa(pausa_remota or cortado())
+		_t_rehacer = maxf(_t_rehacer - real, 0.0)
+		if red.falta_algo and _t_rehacer <= 0.0 and jugando_anfitrion() and not cortado():
+			# Algo no le ha llegado: lo que tiene ya no cuadra. Se le cuenta todo, como tras un corte.
+			red.falta_algo = false
+			_t_rehacer = REHACER_CADA
+			_contarlo_todo()
 		_t_tic += real
 		if _t_tic >= TIC:
 			_t_tic = fmod(_t_tic, TIC)
@@ -216,6 +269,12 @@ func _process(delta: float) -> void:
 			red.enviar([I_COLA, Red.cola])
 			Red.cola = []
 	_pintar_letrero()
+
+
+## Lo que pasa aquí se apunta para el invitado solo en plena partida: ni con el menú ni con
+## el final a la vista (sus clics y sus rodillos los tiene él en su pantalla).
+func _poner_reenvio() -> void:
+	Red.reenviando = jugando_anfitrion() and not p._menu.visible and not p._pantalla.visible and not cortado()
 
 
 func _physics_process(delta: float) -> void:
@@ -259,7 +318,12 @@ func _pintar_letrero() -> void:
 
 
 ## El árbol está parado solo porque el otro ha pausado: el menú de aquí se puede abrir igual.
+## En el invitado nada de aquí para la partida de verdad: su menú se abre siempre, salvo con
+## el final a la vista o con un panel que maneja él.
 func pausa_prestada() -> bool:
+	if jugando_invitado():
+		return not p._menu.visible and not p._pantalla.visible \
+				and not (p._dueno_panel == p.jugador2 and p.panel_a_la_vista())
 	return en_partida and _pausa_mia and not p.algo_pausa()
 
 
@@ -425,7 +489,9 @@ func _del_invitado(tipo: int, m: Array) -> void:
 			if m[4] is Vector2 and _finito(m[4]):
 				_raton_remoto(m[4], 0, MOUSE_BUTTON_NONE)
 		I_RODAR:
-			if m.size() >= 2 and m[1] is Vector2 and _finito(m[1]) and not get_tree().paused:
+			# Como en local: ni rodando ni antes de que acabe el enfriamiento (con un margen por la red).
+			if m.size() >= 2 and m[1] is Vector2 and _finito(m[1]) and not get_tree().paused \
+					and j2.falta_para_rodar() <= HOLGURA_RODAR:
 				Red.eco = false  # su voltereta ya la ha oído y visto él
 				j2.rodar_remoto(m[1], true)
 				Red.eco = true
@@ -488,6 +554,38 @@ static func _numero(v: Variant) -> bool:
 	return (v is float or v is int) and is_finite(float(v))
 
 
+## Los argumentos de un efecto del jugo ya acotados (ver ARGS_FX), o null si no valen.
+static func _args_fx(metodo: StringName, args: Array) -> Variant:
+	if not ARGS_FX.has(metodo) or args.size() != ARGS_FX[metodo].size():
+		return null
+	var limpios: Array = []
+	for i in args.size():
+		var v = args[i]
+		var forma: Array = ARGS_FX[metodo][i]
+		match int(forma[0]):
+			TYPE_FLOAT:
+				if not _numero(v):
+					return null
+				limpios.append(clampf(float(v), forma[1], forma[2]))
+			TYPE_INT:
+				if not (v is int):
+					return null
+				limpios.append(clampi(v, forma[1], forma[2]))
+			TYPE_VECTOR2:
+				if not (v is Vector2) or not _finito(v):
+					return null
+				limpios.append(v)
+			TYPE_STRING:
+				if not (v is String):
+					return null
+				limpios.append(v.left(forma[2]))
+			_:
+				if typeof(v) != int(forma[0]):
+					return null
+				limpios.append(v)
+	return limpios
+
+
 static func _finito(v: Vector2) -> bool:
 	return is_finite(v.x) and is_finite(v.y)
 
@@ -543,6 +641,12 @@ func pedir(datos: Array) -> void:
 func _input(ev: InputEvent) -> void:
 	if not jugando_invitado() or p._menu.visible:
 		return
+	# Con el árbol parado por el anfitrión, Esc o Start abren aquí el menú antes de que se lo
+	# quede un panel ajeno (main filtra lo que no es del dueño y el selector salta con Esc).
+	if get_tree().paused and pausa_prestada() and _pide_pausa(ev):
+		p.quizas_pausar()
+		get_viewport().set_input_as_handled()
+		return
 	if not (p._panel.visible or p._panel_apuestas.visible) or p._dueno_panel != p.jugador2:
 		return
 	if ev is InputEventMouseMotion:
@@ -560,6 +664,12 @@ func _input(ev: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+static func _pide_pausa(ev: InputEvent) -> bool:
+	if ev is InputEventKey:
+		return ev.pressed and not ev.echo and ev.keycode == KEY_ESCAPE
+	return Mando.accion(ev) == "pausa"
+
+
 ## El jugador de este ordenador acaba de rodar (solo cuenta en el invitado).
 func al_rodar_yo(direccion: Vector2) -> void:
 	if jugando_invitado() and not p.jugador2.remoto:
@@ -567,9 +677,10 @@ func al_rodar_yo(direccion: Vector2) -> void:
 
 
 func avisar_pausa(pausado: bool) -> void:
-	if en_partida and red.en_pareja():
-		if red.anfitrion:
-			return  # la del anfitrión ya viaja con el estado
+	if not en_partida or red.anfitrion:
+		return  # la del anfitrión ya viaja con el estado
+	_pintar_paneles()  # con mi menú abierto no se pinta el panel del anfitrión: lo taparía
+	if red.en_pareja():
 		red.enviar([I_PAUSA, pausado])
 
 
@@ -596,8 +707,11 @@ func _del_anfitrion(tipo: int, m: Array) -> void:
 			if en_partida and m.size() >= 7 and m[1] is int and m[1] == n_sala:
 				_aplicar_tic(m)
 		A_FIN:
-			if en_partida and m.size() >= 2 and m[1] is bool:
-				p.acabar_espejo(m[1])
+			# Una vez a la vista basta; y al progreso suma una sola vez por partida (tras un
+			# corte con el final ya en pantalla vuelve a llegar, y en el infinito se acaba otra vez).
+			if en_partida and m.size() >= 2 and m[1] is bool and not p._pantalla.visible:
+				p.acabar_espejo(m[1], not _fin_contado)
+				_fin_contado = true
 		A_PORTADA:
 			if en_partida:
 				en_partida = false
@@ -626,6 +740,8 @@ func _empezar_invitado(datos: Dictionary) -> void:
 	if not completo or not PersonajesDB.PERSONAJES.has(datos.personaje) or not PersonajesDB.PERSONAJES.has(datos.personaje2):
 		return
 	var seguia := en_partida  # un "empezar" con la partida en marcha: vuelta tras un corte
+	if not seguia:
+		_fin_contado = false
 	en_partida = true
 	Red.espejo = true
 	pausa_remota = false
@@ -641,9 +757,19 @@ func _empezar_invitado(datos: Dictionary) -> void:
 func _solo_conocido(datos: Dictionary) -> Dictionary:
 	var d := {"azar_seed": int(datos.azar_seed), "azar_state": int(datos.azar_state)}
 	for campo in Juego.CAMPOS_PARTIDA:
-		if datos.has(campo) and typeof(datos[campo]) == typeof(Juego.get(campo)):
+		if datos.has(campo) and typeof(datos[campo]) == typeof(Juego.get(campo)) and _vale_para_juego(campo, datos[campo]):
 			d[campo] = datos[campo]
 	return d
+
+
+## Lo que aquí se usa para buscar algo (un personaje, una mesa) tiene que existir aquí.
+static func _vale_para_juego(campo: String, v: Variant) -> bool:
+	match campo:
+		"personaje", "personaje2":
+			return PersonajesDB.PERSONAJES.has(v)
+		"mesa":
+			return v >= 0 and v < PersonajesDB.MESAS.size()
+	return true
 
 
 func _aplicar_tic(m: Array) -> void:
@@ -698,7 +824,7 @@ func _aplicar_estado(e: Dictionary) -> void:
 		var v = e[k]
 		if k.begins_with("j:"):
 			var campo: String = k.substr(2)
-			if CAMPOS_JUEGO.has(campo) and typeof(v) == typeof(Juego.get(campo)):
+			if CAMPOS_JUEGO.has(campo) and typeof(v) == typeof(Juego.get(campo)) and _vale_para_juego(campo, v):
 				Juego.set(campo, v)
 				juego = true
 				cartas = cartas or campo == "cartas"
@@ -762,12 +888,36 @@ func _aplicar_estado(e: Dictionary) -> void:
 
 
 ## Los paneles del anfitrión, aquí, son solo un dibujo: ni se mueven solos ni leen nada.
+## Cómo estaban antes se guarda, para devolverlos tal cual al salir del espejo.
 func _ver_panel(panel: Control, a_la_vista: bool) -> void:
-	panel.visible = a_la_vista
-	panel.set_process(false)
-	panel.set_process_input(false)
-	panel.set_process_unhandled_input(false)
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if not _paneles_antes.has(panel):
+		_paneles_antes[panel] = [panel.is_processing(), panel.is_processing_input(),
+			panel.is_processing_unhandled_input(), panel.mouse_filter]
+		panel.set_process(false)
+		panel.set_process_input(false)
+		panel.set_process_unhandled_input(false)
+		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_paneles_alla[panel] = a_la_vista
+	_pintar_paneles()
+
+
+## Con mi menú abierto, el panel del anfitrión no se pinta: va por encima y lo taparía.
+func _pintar_paneles() -> void:
+	for panel in _paneles_alla:
+		panel.visible = _paneles_alla[panel] and not p._menu.visible
+
+
+## Fuera del espejo, los paneles vuelven a ser los de esta partida: cerrados y como estaban.
+func soltar_paneles() -> void:
+	for panel in _paneles_antes:
+		var antes: Array = _paneles_antes[panel]
+		panel.visible = false
+		panel.set_process(antes[0])
+		panel.set_process_input(antes[1])
+		panel.set_process_unhandled_input(antes[2])
+		panel.mouse_filter = antes[3]
+	_paneles_antes.clear()
+	_paneles_alla.clear()
 
 
 func _poner_en_panel(panel: Control, nombre: String, v: Variant) -> void:
@@ -790,8 +940,10 @@ func _aplicar_evento(ev: Variant) -> void:
 	match ev[0]:
 		Red.FX:
 			if ev.size() >= 3 and (ev[1] is StringName or ev[1] is String) and ev[2] is Array \
-					and Jugo.REENVIABLES.has(StringName(ev[1])) and ev[2].size() <= 4:
-				p._jugo.callv(StringName(ev[1]), ev[2])
+					and Jugo.REENVIABLES.has(StringName(ev[1])):
+				var args = _args_fx(StringName(ev[1]), ev[2])
+				if args != null:
+					p._jugo.callv(StringName(ev[1]), args)
 		Red.SONIDO:
 			if ev.size() >= 4 and ev[1] is String and _numero(ev[2]) and _numero(ev[3]):
 				Sonido.tocar(ev[1], clampf(float(ev[2]), 0.2, 4.0), clampf(float(ev[3]), -40.0, 6.0))
@@ -815,15 +967,19 @@ func _aplicar_evento(ev: Variant) -> void:
 
 
 # ------------------------------------------------------------ cortes y despedidas
-func _al_irse_companero() -> void:
+## motivo: "" si el otro se ha ido; "sin_conexion" si me he quedado yo sin conexión del todo
+## (y entonces Red ya está apagado: quién soy se mira en lo que hacía, no en Red).
+func _al_irse_companero(motivo: String) -> void:
 	var jugaba := en_partida
+	var llevaba_partida := jugaba and not Red.espejo  # el anfitrión, en plena partida
 	_soltar()
-	if red.en_sala():  # soy el anfitrión: la sala sigue siendo mía
-		if jugaba:
-			red.salir()  # con la partida en marcha no entra nadie más: se sigue en solitario
-			p.seguir_en_solitario()
-	else:
-		cerrada.emit("anfitrion_fuera", jugaba)
+	if llevaba_partida:
+		# La partida es mía y sigue, sin el otro (con la partida en marcha no entra nadie más).
+		if red.en_sala():
+			red.salir()
+		p.seguir_en_solitario()
+	elif not red.en_sala():  # me he quedado sin sala: o se ha ido el anfitrión, o se me ha cortado a mí
+		cerrada.emit(motivo if motivo != "" else "anfitrion_fuera", jugaba)
 	sala_cambiada.emit()
 
 
@@ -831,24 +987,34 @@ func _al_irse_companero() -> void:
 func _al_volver_companero() -> void:
 	if not jugando_anfitrion():
 		if anfitrion():
+			red.enviar([A_PORTADA])  # por si se cortó en plena partida y ya no la hay (si no, la ignora)
 			red.enviar([A_VESTIBULO, {"fase": fase_anfitrion}])
 		elif red.invitado() and not en_partida:
 			red.enviar([I_PERSONAJE, personaje_invitado])
 		return
+	_contarlo_todo()
+
+
+## Anfitrión: la partida entera otra vez, como si empezara ahora (y el final, si está a la vista).
+func _contarlo_todo() -> void:
 	_empezar_a_contar()
 	n_sala += 1
 	p.jugador2.remoto_pos = p.jugador2.position
 	red.enviar([A_SALA, n_sala, p.actual.pos, p.salas, Vector2i.ZERO, p.jugador.position, p.jugador2.position, Juego.piso])
+	if p._pantalla.visible:
+		red.enviar([A_FIN, _gano])
 
 
 func _soltar() -> void:
 	if en_partida and not red.anfitrion:
 		espejo.vaciar()
+	soltar_paneles()
 	en_partida = false
 	pausa_remota = false
 	fase_anfitrion = "sala"
 	Red.reenviando = false
 	Red.espejo = false
+	Red.eco = true
 	Red.cola.clear()
 	if _pausa_mia:
 		_pausa_mia = false
