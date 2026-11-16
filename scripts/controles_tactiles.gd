@@ -87,7 +87,7 @@ func _toque(evento: InputEventScreenTouch) -> void:
 			principal.comprar(principal.articulo_a_mano())
 		get_viewport().set_input_as_handled()
 	elif _hay_botones() and _en_boton(p, BOTON_RODAR, RADIO_RODAR):
-		principal.jugador.pedir_voltereta()
+		principal.mio().pedir_voltereta()
 		_pulsado_t["rodar"] = 0.15
 		get_viewport().set_input_as_handled()
 	elif _hay_botones() and _en_boton(p, BOTON_ORDAGO, RADIO_ORDAGO):
@@ -133,7 +133,7 @@ func _draw() -> void:
 
 
 func _dibujar_botones() -> void:
-	var lista: bool = principal.jugador.voltereta_lista()
+	var lista: bool = principal.mio().voltereta_lista()
 	var brillo_rodar: float = _pulsado_t.get("rodar", 0.0) / 0.15
 	draw_circle(BOTON_RODAR, RADIO_RODAR, Color(0.48, 0.35, 0.63, 0.55 + 0.3 * brillo_rodar))
 	draw_arc(BOTON_RODAR, RADIO_RODAR, 0.0, TAU, 32, Color(CREMA, 0.8 if lista else 0.35), 1.5)

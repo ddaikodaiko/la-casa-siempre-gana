@@ -205,6 +205,7 @@ const TODO := -10  # un solo jugador: teclado, ratón, cualquier mando y la pant
 const TECLADO := -1  # el teclado entero y el ratón
 const TECLADO_IZQ := -2  # teclado compartido, J1: WASD, Espacio, Mayús izq., Q, E (y el ratón)
 const TECLADO_DER := -3  # teclado compartido, J2: flechas, Ctrl dcho./Intro, Mayús dcha., Fin
+const REMOTO := -20  # cooperativo online: lo mueve el otro ordenador, aquí no le llega ningún evento
 ## Las teclas de la mitad derecha (J2 con el teclado compartido). Las demás son de la izquierda.
 const TECLAS_DERECHA := [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_KP_ENTER, KEY_END,
 	KEY_DELETE, KEY_KP_0, KEY_BACKSPACE, KEY_5, KEY_KP_5]

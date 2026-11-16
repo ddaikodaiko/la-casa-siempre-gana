@@ -36,6 +36,9 @@ func _ready() -> void:
 
 
 func abrir() -> void:
+	_online = false
+	if not _j2.is_empty() and int(_j2.entrada) == Mando.REMOTO:
+		_j2 = {}
 	_abrir_coop()
 	_mesa_deseada = maxi(_mesa_deseada, _mesa)
 	_mesa = mini(_mesa_deseada, Progreso.mesa_elegible(_ids[_indice]))
@@ -435,6 +438,31 @@ var entrada_j1 := Mando.TECLADO
 var _j2: Dictionary = {}  # {} o {"entrada": de Mando, "indice": su personaje}
 
 
+# Cooperativo online: el J2 es el invitado, que elige su personaje desde su ordenador.
+var _online := false
+var _nombre_j2 := ""
+
+
+## La selección para el anfitrión de una sala online. "sigue": ya estaba abierta y solo
+## cambia lo del invitado.
+func abrir_online(personaje2: String, nombre2: String, sigue := false) -> void:
+	if not sigue:
+		abrir()
+	_online = true
+	_nombre_j2 = nombre2
+	_j2 = {"entrada": Mando.REMOTO, "indice": maxi(_ids.find(personaje2), 0)}
+
+
+func cerrar_online() -> void:
+	_online = false
+	_j2 = {}
+	visible = false
+
+
+func es_online() -> bool:
+	return _online
+
+
 ## Lo que necesita main para empezar en cooperativo ({} si el J2 no está).
 func config_coop() -> Dictionary:
 	if _j2.is_empty() or not hay_coop():
@@ -504,7 +532,7 @@ func _mover_j2(sentido: int) -> void:
 
 ## Devuelve true si el evento era del J2 (o para unirse) y ya está atendido.
 func _evento_coop(evento: InputEvent) -> bool:
-	if not hay_coop():
+	if _online or not hay_coop():
 		return false
 	if _j2.is_empty():
 		return _mirar_union(evento)
@@ -553,6 +581,12 @@ func _mirar_union(evento: InputEvent) -> bool:
 
 ## Arriba, encima del título: cómo unirse, o quién es el J2 y cómo salirse.
 func _dibujar_coop() -> void:
+	if _online:
+		var quien := _nombre_j2 if _nombre_j2 != "" else Idioma.t("J2")
+		_centrado(Juego.fuente, 8, "%s: %s  (%s)" % [quien, PersonajesDB.nombre(_ids[int(_j2.indice)]).to_upper(), Idioma.t("ONLINE")], 0, 640, 10, COLOR_J2)
+		var c := _caja(int(_j2.indice))
+		draw_string(Juego.fuente, c.position + Vector2(3, 18 if c == _caja(_indice) else 9), Idioma.t("J2"), HORIZONTAL_ALIGNMENT_LEFT, -1, 8, COLOR_J2)
+		return
 	if not hay_coop():
 		return
 	if _j2.is_empty():

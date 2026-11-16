@@ -150,3 +150,59 @@ La cuenta anónima por dispositivo se pierde si se borra el juego. Para conserva
 
 Nada de esto se ha probado contra un proyecto de Supabase real (PostgREST, su
 configuración de CORS y sus claves nuevas). Haz el paso 7 antes de anunciarlo.
+
+
+# Cooperativo online (el relé)
+
+Dos jugadores, cada uno en su casa, en la misma partida. No usa Supabase: usa un relé
+propio (`servidor/rele/`, un servidor de WebSocket con Bun) que solo junta a los dos
+jugadores de una sala por su código y les pasa los mensajes tal cual. No guarda nada:
+ni cuentas, ni partidas. Sin `[multijugador] servidor` en `online.cfg`, el menú no enseña
+el cooperativo online y no se abre ninguna conexión.
+
+## Cómo funciona
+
+- Uno **crea la sala** y recibe un código de cuatro letras; el otro **se une** con él.
+- La partida la lleva entera el que crea la sala (el anfitrión): es su partida cooperativa
+  de siempre, con el J2 manejado desde el otro ordenador. El invitado mueve a su jugador
+  en local (responde al instante) y todo lo demás lo ve tal como lo dibuja el anfitrión.
+- Si a uno se le corta la conexión, la partida se para en los dos y el juego intenta volver
+  solo durante 20 segundos (el relé le guarda el sitio 25). Si el invitado no vuelve, el
+  anfitrión sigue en solitario; si se va el anfitrión, la partida se acaba.
+- Solo se juntan dos juegos con la misma versión (`Red.VERSION` en `scripts/red.gd`):
+  súbela con cada versión del juego y cada vez que cambie lo que se cuentan
+  (`scripts/pareja.gd`, `scripts/espejo.gd`).
+- El progreso (logros, victorias, personajes) lo guarda cada uno en su ordenador. El reto
+  diario no se juega online, y no se puede entrar en una partida ya empezada.
+
+## Ponerlo en marcha
+
+En local, para probar (dos juegos en el mismo ordenador o en la misma red):
+
+```sh
+cd servidor/rele && bun install && PORT=8080 bun servidor.ts
+# en online.cfg:  [multijugador]  servidor="ws://127.0.0.1:8080"
+```
+
+En internet, en Cloud Run (cabe en la capa gratuita; sin nadie jugando no hay ninguna
+instancia encendida):
+
+```sh
+gcloud auth login && gcloud config set project TU-PROYECTO
+servidor/rele/desplegar.sh            # o: desplegar.sh europe-west1
+```
+
+Al terminar imprime la línea que hay que poner en `online.cfg`, sección `[multijugador]`
+(`servidor="wss://casa-rele-....run.app"`). Como con la tabla mundial, hay que incluir
+`online.cfg` al exportar (paso 6 de arriba). El relé corre con una sola instancia a
+propósito: las salas viven en memoria y los dos jugadores tienen que caer en la misma.
+
+Variables del relé (todas opcionales): `PORT`, `MAX_SALAS`, `GRACIA_MS` (lo que se guarda
+el sitio tras un corte) y los topes de mensajes; están al principio de `servidor.ts`.
+
+## Pruebas
+
+```sh
+cd servidor/rele && bun test                 # el relé solo
+GODOT=/ruta/a/godot tests/prueba_pareja.sh   # el relé y dos juegos: una partida entera
+```

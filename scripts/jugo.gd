@@ -213,7 +213,7 @@ func _process(delta: float) -> void:
 # ------------------------------------------------------------ tiempo
 ## Una parada de un instante (hit-stop). No se suman: manda la más larga.
 ## Las pequeñas se saltan si acaba de haber otra; forzar la hace igualmente.
-func parar(seg: float, forzar := false) -> void:
+func _parar(seg: float, forzar := false) -> void:
 	if not forzar and _respiro > 0.0:
 		return
 	_parada = maxf(_parada, minf(seg, PARADA_MAX))
@@ -222,6 +222,7 @@ func parar(seg: float, forzar := false) -> void:
 
 ## Un momento de cine: franjas negras, la cámara se acerca a pos y la sala da un latigazo de luz.
 func cine(seg: float, pos: Vector2, zoom := 0.07) -> void:
+	Red.fx(&"cine", [seg, pos, zoom])
 	if _amb == null:
 		return
 	_amb.cine(seg)
@@ -230,11 +231,13 @@ func cine(seg: float, pos: Vector2, zoom := 0.07) -> void:
 
 
 func golpe_jugador() -> void:
+	Red.fx(&"golpe_jugador", [])
 	if _amb != null:
 		_amb.golpe()
 
 
 func camara_lenta(seg: float, escala: float) -> void:
+	Red.fx(&"camara_lenta", [seg, escala])
 	if _lenta > 0.0 and _lenta_escala <= escala and _lenta >= seg:
 		return
 	_lenta = seg
@@ -261,7 +264,7 @@ func _aplicar_tiempo(real: float) -> void:
 
 # ------------------------------------------------------------ cámara y pantalla
 ## Temblor de pantalla; con dirección, además la empuja hacia ese lado.
-func sacudir(fuerza: float, direccion := Vector2.ZERO) -> void:
+func _sacudir(fuerza: float, direccion := Vector2.ZERO) -> void:
 	if not Juego.sacudida:
 		return
 	_temblor = maxf(_temblor, fuerza)
@@ -294,6 +297,7 @@ func _aplicar_sacudida(real: float) -> void:
 
 ## Un fogonazo de color sobre la sala. Sin sacudida (ajuste de accesibilidad), más suave.
 func destello(color: Color, seg := 0.18) -> void:
+	Red.fx(&"destello", [color, seg])
 	if _destello == null:
 		return
 	_destello_color = color
@@ -315,6 +319,7 @@ func _aplicar_destello(real: float) -> void:
 # ------------------------------------------------------------ respuestas a las señales
 ## Ataques.disparo: fogonazo, casquillo, retroceso del dibujo y de la cámara.
 func al_disparar(origen: Vector2, direccion: Vector2, fuerza: float) -> void:
+	Red.fx(&"al_disparar", [origen, direccion, fuerza])
 	if direccion == Vector2.ZERO:
 		return
 	var dir := direccion.normalized()
@@ -324,7 +329,7 @@ func al_disparar(origen: Vector2, direccion: Vector2, fuerza: float) -> void:
 		_amb.luz(origen + dir * 6.0, 26.0 + 10.0 * fuerza, Color(1.0, 0.8, 0.45, 0.35 + 0.1 * fuerza), 0.08 + 0.03 * fuerza)
 	if fuerza >= 2.0:
 		casquillo(origen, dir)
-		sacudir(1.5 * fuerza, -dir)
+		_sacudir(1.5 * fuerza, -dir)
 	empujar_camara(dir, 0.8 * fuerza)
 	if _jugador != null:
 		var quien = _jugador
@@ -332,16 +337,17 @@ func al_disparar(origen: Vector2, direccion: Vector2, fuerza: float) -> void:
 			quien = _otro
 		quien.patada(dir, 1.0 + fuerza * 0.5)
 	if fuerza >= 3.0:
-		parar(0.03)
+		_parar(0.03)
 
 
 ## Ataques.impacto: chispas; los golpes dobles, más grandes y con una parada mínima.
 func al_impactar(posicion: Vector2, direccion: Vector2, critico: bool) -> void:
-	chispas(posicion, direccion, critico)
+	Red.fx(&"al_impactar", [posicion, direccion, critico])
+	_chispas(posicion, direccion, critico)
 	if critico:
 		_critico_fotograma = Engine.get_physics_frames()
 		_critico_pos = posicion
-		parar(0.02)
+		_parar(0.02)
 		if _amb != null:
 			_amb.luz(posicion, 22.0, Color(1.0, 0.85, 0.4, 0.45), 0.12)
 		_disco(posicion, 0.5, 0.08, Color(1.0, 0.95, 0.7, 0.9))
@@ -350,16 +356,17 @@ func al_impactar(posicion: Vector2, direccion: Vector2, critico: bool) -> void:
 ## Ataques.explosion_en: sacude según lo grande que sea, empuja la cámara desde el centro,
 ## y deja onda, humo, luz y una quemadura en el suelo.
 func al_explotar(centro: Vector2, radio: float) -> void:
+	Red.fx(&"al_explotar", [centro, radio])
 	var dir := Vector2.ZERO
 	if _jugador != null:
 		dir = _jugador.position - centro
-	sacudir(clampf(radio / 10.0, 2.0, 6.0), dir)
+	_sacudir(clampf(radio / 10.0, 2.0, 6.0), dir)
 	for i in 3:
-		chispas(centro + Vector2.RIGHT.rotated(randf() * TAU) * radio * 0.5, Vector2.RIGHT.rotated(randf() * TAU), false)
-	polvo(centro, 2)
+		_chispas(centro + Vector2.RIGHT.rotated(randf() * TAU) * radio * 0.5, Vector2.RIGHT.rotated(randf() * TAU), false)
+	_polvo(centro, 2)
 	_anillo(centro, radio, 0.24, Color(1.0, 0.8, 0.5, 0.8))
 	_disco(centro, radio / 26.0, 0.06, Color(1.0, 0.95, 0.8, 0.6))
-	humo(centro, clampi(int(radio / 12.0), 2, 5), radio * 0.5)
+	_humo(centro, clampi(int(radio / 12.0), 2, 5), radio * 0.5)
 	if _amb != null:
 		_amb.luz(centro, radio * 2.4, Color(1.0, 0.6, 0.3, 0.55), 0.3)
 		_amb.quemadura(centro, radio)
@@ -371,7 +378,7 @@ func al_rodar(direccion: Vector2, quien = null) -> void:
 	if quien == null:
 		quien = _jugador
 	if quien != null:
-		polvo(quien.position + Vector2(0, 6), 4, direccion)
+		_polvo(quien.position + Vector2(0, 6), 4, direccion)
 
 
 ## Cooperativo: el segundo jugador también deja estela, tiene luz y sombra (null lo quita).
@@ -401,7 +408,7 @@ func _seguir_voltereta(delta: float) -> void:
 			else:
 				fantasma(_sprite_jugador)
 	if not rueda and _rodaba:
-		polvo(_jugador.position + Vector2(0, 6), 3)
+		_polvo(_jugador.position + Vector2(0, 6), 3)
 	_rodaba = rueda
 	if _otro == null or not is_instance_valid(_otro):
 		return
@@ -412,7 +419,7 @@ func _seguir_voltereta(delta: float) -> void:
 			_otro_fantasma_t = 0.035 if rueda2 else FANTASMA_DESATADO
 			fantasma(_otro.get_node("Sprite"), Color(0.75, 0.85, 1.0, 0.45) if rueda2 else Color(1.0, 0.7, 0.35, 0.5), _otro)
 	if not rueda2 and _otro_rodaba:
-		polvo(_otro.position + Vector2(0, 6), 3)
+		_polvo(_otro.position + Vector2(0, 6), 3)
 	_otro_rodaba = rueda2
 
 
@@ -425,12 +432,14 @@ func al_entrar_sala(tipo: int, piso: int) -> void:
 
 ## Una marca en el suelo, que se cierra, donde va a aparecer un enemigo dentro de seg.
 func aviso_nacimiento(pos: Vector2, seg: float) -> void:
+	Red.fx(&"aviso_nacimiento", [pos, seg])
 	if _amb != null:
 		_amb.marca_nacimiento(pos, seg)
 
 
 ## Una bala te ha pasado rozando: un arco de chispa a tu lado, hacia donde venía.
 func roce(pos: Vector2) -> void:
+	Red.fx(&"roce", [pos])
 	if _brillo == null:
 		return
 	var centro: Vector2 = _jugador.position if _jugador != null else pos
@@ -451,27 +460,29 @@ func roce(pos: Vector2) -> void:
 	p.desvanece = 0.3
 	if _brillo.particulas.size() < TOPE_AIRE:
 		_brillo.particulas.append(p)
-	chispas(centro + hacia.normalized() * 7.0, hacia, false)
+	_chispas(centro + hacia.normalized() * 7.0, hacia, false)
 	if _amb != null:
 		_amb.luz(centro, 18.0, Color(0.6, 0.85, 1.0, 0.4), 0.12)
 
 
 ## Una baja especial (la última de la sala, una élite, una encadenada): más que una normal.
 func remate(pos: Vector2) -> void:
+	Red.fx(&"remate", [pos])
 	_disco(pos, 1.4, 0.08, Color(1.0, 1.0, 0.95, 0.8))
 	_anillo(pos, 34.0, 0.3, Color(1.0, 0.85, 0.5, 0.9))
 	_anillo(pos, 20.0, 0.22, Color(1.0, 0.5, 0.4, 0.7))
-	trozos(pos, 10, 1.4)
+	_trozos(pos, 10, 1.4)
 	for i in 3:
-		chispas(pos, Vector2.RIGHT.rotated(TAU * i / 3.0 + randf()), true)
+		_chispas(pos, Vector2.RIGHT.rotated(TAU * i / 3.0 + randf()), true)
 	if _amb != null:
 		_amb.luz(pos, 90.0, Color(1.0, 0.75, 0.45, 0.6), 0.35)
 		_amb.golpe_zoom(0.02, pos)
-	sacudir(4.0)
+	_sacudir(4.0)
 
 
 ## Entra una oleada nueva: un rótulo breve arriba del todo.
 func oleada(numero: int, total: int) -> void:
+	Red.fx(&"oleada", [numero, total])
 	if _amb != null:
 		_amb.oleada(numero, total)
 
@@ -540,7 +551,7 @@ func fogonazo(pos: Vector2, dir: Vector2, fuerza: float) -> void:
 	_brillo.particulas.append(p)
 
 
-func chispas(pos: Vector2, dir: Vector2, critico := false) -> void:
+func _chispas(pos: Vector2, dir: Vector2, critico := false) -> void:
 	if _tex_chispa == null or _chispas_fotograma >= CHISPAS_POR_FOTOGRAMA:
 		return
 	_chispas_fotograma += 1
@@ -583,7 +594,7 @@ func casquillo(pos: Vector2, dir: Vector2) -> void:
 
 ## El estallido de una ficha al morir: destello, un aro y trozos de colores que saltan,
 ## rebotan y se quedan en el suelo.
-func trozos(pos: Vector2, cuantos: int, fuerza := 1.0) -> void:
+func _trozos(pos: Vector2, cuantos: int, fuerza := 1.0) -> void:
 	var grande := cuantos >= 9
 	_disco(pos, 0.9 if grande else 0.6, 0.07, Color(1.0, 1.0, 1.0, 0.9))
 	_anillo(pos, 16.0 if grande else 10.0, 0.18, Color(COLOR_CREMA, 0.75))
@@ -610,7 +621,7 @@ func trozos(pos: Vector2, cuantos: int, fuerza := 1.0) -> void:
 		_suelo.particulas.append(p)
 
 
-func polvo(pos: Vector2, cuantos: int, dir := Vector2.ZERO) -> void:
+func _polvo(pos: Vector2, cuantos: int, dir := Vector2.ZERO) -> void:
 	if _tex_polvo == null or _suelo == null:
 		return
 	for i in cuantos:
@@ -627,7 +638,7 @@ func polvo(pos: Vector2, cuantos: int, dir := Vector2.ZERO) -> void:
 
 
 ## Humo oscuro que sube despacio: explosiones y apariciones.
-func humo(pos: Vector2, cuantos: int, dispersion := 6.0) -> void:
+func _humo(pos: Vector2, cuantos: int, dispersion := 6.0) -> void:
 	if _tex_polvo == null or _aire == null:
 		return
 	for i in cuantos:
@@ -646,6 +657,7 @@ func humo(pos: Vector2, cuantos: int, dispersion := 6.0) -> void:
 
 ## La onda del órdago: un anillo que crece hasta casi llenar la sala.
 func onda(pos: Vector2) -> void:
+	Red.fx(&"onda", [pos])
 	if _tex_onda == null:
 		return
 	for i in 2:
@@ -706,6 +718,7 @@ func fantasma(sprite: Sprite2D, color := Color(0.75, 0.85, 1.0, 0.45), quien = n
 
 ## Los números de daño. Los golpes dobles salen grandes, dorados y con un "!".
 func numero_dano(pos: Vector2, cantidad: float, color: Color, critico: bool) -> void:
+	Red.fx(&"numero_dano", [pos, cantidad, color, critico])
 	if not Juego.numeros_dano:
 		return
 	var cifra := str(maxi(1, roundi(cantidad)))
@@ -717,6 +730,7 @@ func numero_dano(pos: Vector2, cantidad: float, color: Color, critico: bool) -> 
 
 ## Un aviso que flota un momento (¡POR LOS PELOS!, FIEBRE 2...). Ya traducido.
 func texto(pos: Vector2, contenido: String, color := COLOR_CREMA, grande := false) -> void:
+	Red.fx(&"texto", [pos, contenido, color, grande])
 	_texto(pos, contenido, color, grande, 0.9)
 
 
@@ -736,3 +750,42 @@ func _texto(pos: Vector2, contenido: String, color: Color, grande: bool, vida: f
 	p.crece = 0.12
 	p.desvanece = 0.35
 	_textos.particulas.append(p)
+
+
+# ------------------------------------------------------------ cooperativo online
+## Lo que se llama desde fuera pasa por aquí: se hace y, si este ordenador es el anfitrión de
+## una partida online, se apunta para que el invitado lo vea también (Red.fx). Por dentro el
+## jugo llama a las versiones con guion bajo, que no apuntan nada: así no sale nada dos veces.
+const REENVIABLES := [&"parar", &"sacudir", &"chispas", &"trozos", &"polvo", &"humo", &"cine", &"golpe_jugador",
+	&"camara_lenta", &"destello", &"al_disparar", &"al_impactar", &"al_explotar", &"aviso_nacimiento", &"roce",
+	&"remate", &"oleada", &"onda", &"numero_dano", &"texto"]
+
+
+func parar(seg: float, forzar := false) -> void:
+	Red.fx(&"parar", [seg, forzar])
+	_parar(seg, forzar)
+
+
+func sacudir(fuerza: float, direccion := Vector2.ZERO) -> void:
+	Red.fx(&"sacudir", [fuerza, direccion])
+	_sacudir(fuerza, direccion)
+
+
+func chispas(pos: Vector2, dir: Vector2, critico := false) -> void:
+	Red.fx(&"chispas", [pos, dir, critico])
+	_chispas(pos, dir, critico)
+
+
+func trozos(pos: Vector2, cuantos: int, fuerza := 1.0) -> void:
+	Red.fx(&"trozos", [pos, cuantos, fuerza])
+	_trozos(pos, cuantos, fuerza)
+
+
+func polvo(pos: Vector2, cuantos: int, dir := Vector2.ZERO) -> void:
+	Red.fx(&"polvo", [pos, cuantos, dir])
+	_polvo(pos, cuantos, dir)
+
+
+func humo(pos: Vector2, cuantos: int, dispersion := 6.0) -> void:
+	Red.fx(&"humo", [pos, cuantos, dispersion])
+	_humo(pos, cuantos, dispersion)

@@ -224,6 +224,28 @@ func _guardar_mesas() -> void:
 	_datos["mesas"] = mesas.map(func(m): return m.volcar_datos())
 
 
+## Cooperativo online: el estado de todas las mesas, [[estado, dirección], ...], y ponerlas así.
+func datos_mesas() -> Array:
+	return mesas.map(func(m): return m.volcar_datos())
+
+
+func aplicar_mesas(guardadas: Array) -> void:
+	var cambia := false
+	for i in mini(guardadas.size(), mesas.size()):
+		var g = guardadas[i]
+		if not (g is Array) or g.size() < 2 or not (g[1] is Vector2):
+			continue
+		var m: Mesa = mesas[i]
+		if int(g[0]) == m.estado:
+			continue
+		m.restaurar(g, refuerzo_mesas)
+		cambia = true
+	if cambia:
+		_rehacer_cajas_mesas()
+		_guardar_mesas()
+		queue_redraw()
+
+
 ## Lo consulta cada bala enemiga: true si ha chocado con una mesa volcada (y la mesa lo cuenta).
 func bloquea_bala(p: Vector2) -> bool:
 	if _volcadas == 0:
