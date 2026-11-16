@@ -784,6 +784,8 @@ func dejaria_sin_ataques(ranura: int, id_nueva: String) -> bool:
 
 
 func mover_carta(origen: int, destino: int) -> void:
+	if Red.espejo:  # cooperativo online: la fila es del anfitrión; aquí se ve ya y él la confirma
+		Red.cola.append([Red.MOVER_CARTA, origen, destino])
 	cartas = fila_con_movimiento(origen, destino)
 	cartas_cambiadas.emit()
 

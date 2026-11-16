@@ -62,6 +62,7 @@ var en_coop := false  # se dibuja su marca de color y su etiqueta
 ## Fuera de juego: tumbado, ni se mueve ni dispara ni le pegan. Lo levanta el otro o el final de la sala.
 var caido := false
 var reanimar := 0.0  # de 0 a 1: la barra de reanimación (la lleva main)
+var nombre_online := ""  # cooperativo online: el nombre que sale encima en vez de "J1"/"J2"
 var _etiqueta_t := 0.0
 var _tinte := Color.WHITE
 
@@ -72,11 +73,15 @@ func _physics_process(delta: float) -> void:
 	if en_coop:
 		_etiqueta_t = maxf(_etiqueta_t - delta, 0.0)
 		queue_redraw()
+	if remoto:
+		_mover_remoto(delta)
+		return
 	if caido:
 		velocity = Vector2.ZERO
 		arrastre = Vector2.ZERO
 		return
 	var direccion := _leer_direccion()
+	direccion_vista = direccion
 	if direccion != Vector2.ZERO:
 		_ultima_direccion = direccion
 	_enfriamiento = maxf(_enfriamiento - delta, 0.0)
@@ -107,6 +112,8 @@ func _physics_process(delta: float) -> void:
 
 
 func _unhandled_input(evento: InputEvent) -> void:
+	if remoto:
+		return
 	if entrada != Mando.TODO:
 		if _pide_voltereta_coop(evento):
 			pedir_voltereta()
@@ -186,8 +193,9 @@ func _empezar_voltereta(direccion: Vector2) -> void:
 	_rodados.clear()
 	Juego.ultima_voltereta = Juego.tiempo_partida
 	Sonido.tocar("voltereta", randf_range(0.95, 1.1))
-	# As en la Manga: al rodar sueltas naipes en todas direcciones.
-	if Juego.stat("voltereta_bala") > 0.0 and ataques != null:
+	# As en la Manga: al rodar sueltas naipes en todas direcciones. En el invitado online no:
+	# los suelta el anfitrión con su muñeco (y se ven aquí en espejo).
+	if Juego.stat("voltereta_bala") > 0.0 and ataques != null and not Red.espejo:
 		ataques.ataque_suelto("nova", 3.0, 6, position)
 	voltereta.emit(_rodar_dir)
 
@@ -204,7 +212,11 @@ func _rodar(delta: float) -> void:
 	if _rodar_t <= 0.0:
 		_rodar_t = 0.0
 		_aterrizaje = 1.0
-		_enfriamiento = VOLTERETA_ENFRIAMIENTO * (1.0 - clampf(Juego.stat("voltereta_rapida"), 0.0, 0.8))
+		_enfriamiento = _enfriamiento_tras_rodar()
+
+
+func _enfriamiento_tras_rodar() -> float:
+	return VOLTERETA_ENFRIAMIENTO * (1.0 - clampf(Juego.stat("voltereta_rapida"), 0.0, 0.8))
 
 
 func _mirar_pelos() -> void:
@@ -378,6 +390,81 @@ func _pide_voltereta_coop(evento: InputEvent) -> bool:
 	return k == KEY_SPACE or k == KEY_SHIFT
 
 
+# ------------------------------------------------------------ cooperativo online
+## A este jugador lo mueve otro ordenador: aquí solo se pone donde dice y se anima igual.
+var remoto := false
+var remoto_pos := Vector2.ZERO
+var remoto_dir := Vector2.ZERO
+## En el anfitrión, lo que le pasa al muñeco cuenta (roces, atropellos, por los pelos);
+## en el invitado, el muñeco del anfitrión es solo un dibujo.
+var remoto_manda := false
+## Hacia dónde anda ahora mismo (lo que se le cuenta al otro ordenador).
+var direccion_vista := Vector2.ZERO
+var arrastre_visto := Vector2.ZERO
+const REMOTO_SALTO := 70.0  # más lejos que esto no se desliza: aparece allí
+
+
+func _mover_remoto(delta: float) -> void:
+	velocity = Vector2.ZERO
+	arrastre_visto = arrastre  # lo que tira de él aquí se lo cuenta el anfitrión al invitado
+	arrastre = Vector2.ZERO
+	_enfriamiento = maxf(_enfriamiento - delta, 0.0)  # la cuenta de local, para no rodar de más
+	if caido:
+		return
+	if rodando():
+		_rodar_t -= delta
+		if remoto_manda:
+			_mirar_pelos()
+			_atropellar()
+		if _rodar_t <= 0.0:
+			_rodar_t = 0.0
+			_aterrizaje = 1.0
+			_enfriamiento = _enfriamiento_tras_rodar()
+	if position.distance_to(remoto_pos) > REMOTO_SALTO:
+		position = remoto_pos
+	else:
+		position = position.lerp(remoto_pos, clampf(delta * 30.0, 0.0, 1.0))
+	if remoto_manda:
+		_mirar_roces()
+	_animar(remoto_dir, delta)
+	_animar_cuerpo(delta)
+	if _invulnerable_t > 0.0:
+		_invulnerable_t -= delta
+		_sprite.visible = fmod(_invulnerable_t, 0.14) > 0.05 or _invulnerable_t <= 0.0
+
+
+## El otro ordenador dice que este jugador ha empezado a rodar.
+func rodar_remoto(direccion: Vector2, con_sonido: bool) -> void:
+	if caido or direccion == Vector2.ZERO:
+		return
+	_rodar_dir = direccion.normalized()
+	_rodar_t = VOLTERETA_SEG
+	_pelos_hecho = false
+	_rodados.clear()
+	if con_sonido:
+		Sonido.tocar("voltereta", randf_range(0.95, 1.1))
+	if remoto_manda:
+		Juego.ultima_voltereta = Juego.tiempo_partida
+		if Juego.stat("voltereta_bala") > 0.0 and ataques != null:
+			ataques.ataque_suelto("nova", 3.0, 6, position)
+	voltereta.emit(_rodar_dir)
+
+
+func direccion_rodar() -> Vector2:
+	return _rodar_dir
+
+
+## Lo que le falta para poder rodar otra vez, con la misma cuenta que en local (lo que queda
+## de voltereta y el enfriamiento de después). El anfitrión lo mira antes de hacer rodar al J2.
+func falta_para_rodar() -> float:
+	return _rodar_t + _enfriamiento_tras_rodar() if rodando() else _enfriamiento
+
+
+## Lo que queda de parpadeo tras un golpe (el anfitrión se lo cuenta al invitado).
+func respiro() -> float:
+	return maxf(_invulnerable_t, 0.0)
+
+
 ## Al empezar cada sala: "J1"/"J2" encima de la cabeza un momento.
 func mostrar_etiqueta() -> void:
 	_etiqueta_t = ETIQUETA_SEG
@@ -419,6 +506,8 @@ func _draw() -> void:
 	# La marca bajo los pies: un aro del color del jugador.
 	draw_arc(CENTRO_CUERPO + Vector2(0, 6), 7.0, 0.0, TAU, 16, Color(color, 0.85 if not caido else 0.4), 1.0)
 	var nombre := Idioma.t("J1") if indice == 0 else Idioma.t("J2")
+	if nombre_online != "":
+		nombre = nombre_online
 	if caido:
 		_texto_centrado(Idioma.t("FUERA DE JUEGO"), Vector2(0, -15), Color8(214, 61, 79))
 		# La barra de reanimación: se llena mientras el otro está al lado.

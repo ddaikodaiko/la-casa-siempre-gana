@@ -43,6 +43,9 @@ func _correr() -> void:
 	_ok(not m._pantalla.visible, "la pantalla final empieza oculta")
 	var menu = m._menu
 	_ok(menu.visible and paused, "el juego arranca en el menú y en pausa")
+	if menu.con_online:  # con un relé en online.cfg sale un botón más: aquí se prueba el menú de siempre
+		menu.con_online = false
+		menu.abrir_principal()
 	_ok(menu._items == ["jugar", "reto", "coleccion", "logros", "opciones", "salir"], "los seis botones del menú")
 
 	await _clic(menu, 2)

@@ -24,6 +24,8 @@ var _nivel_antes := 0
 var _subida_t := 0.0  # la casilla de Fiebre que se acaba de llenar destella
 var _chispas: Array = []  # [posición, velocidad, t, vida, color]: pocas y por lotes
 var _chispa_espera := 0.0
+## Cooperativo online, en el invitado: [nombre, vida de 0 a 1] del jefe que hay en el anfitrión.
+var jefe_espejo: Array = []
 var _jefe_ref: Object = null
 var _jefe_antes := 1.0
 var _jefe_rastro := 1.0  # lo que ha perdido el jefe se queda un momento en crema
@@ -163,7 +165,7 @@ func _draw() -> void:
 		_dibujar_calor((40.0 if Juego.deuda > 0 else 28.0) + y_extra)
 	_dibujar_mapa()
 	_dibujar_reservas()
-	if horda != null and is_instance_valid(horda.jefe):
+	if _hay_jefe():
 		_dibujar_jefe()
 	elif Juego.progreso_sala >= 0.0:
 		_dibujar_sala()
@@ -246,11 +248,11 @@ func _mirar_fiebre(delta: float) -> void:
 
 func _mirar_jefe(delta: float) -> void:
 	_jefe_golpe_t = maxf(_jefe_golpe_t - delta, 0.0)
-	if horda == null or not is_instance_valid(horda.jefe):
+	if not _hay_jefe():
 		_jefe_ref = null
 		return
-	var j := horda.jefe
-	var k := clampf(j.vida / j.vida_max, 0.0, 1.0)
+	var j: Object = self if not jefe_espejo.is_empty() else horda.jefe
+	var k := _vida_jefe()
 	if j != _jefe_ref:
 		_jefe_ref = j
 		_jefe_antes = k
@@ -446,12 +448,21 @@ func _dibujar_mapa() -> void:
 
 ## La barra del jefe: marco, rastro crema de lo que acaba de perder, destello al golpearlo
 ## y marcas cada cuarto. Por debajo de un tercio, el marco late en rojo.
+func _hay_jefe() -> bool:
+	return not jefe_espejo.is_empty() or (horda != null and is_instance_valid(horda.jefe))
+
+
+func _vida_jefe() -> float:
+	if not jefe_espejo.is_empty():
+		return clampf(float(jefe_espejo[1]), 0.0, 1.0)
+	return clampf(horda.jefe.vida / horda.jefe.vida_max, 0.0, 1.0)
+
+
 func _dibujar_jefe() -> void:
-	var j := horda.jefe
 	var ancho := 180.0
 	var x := 320.0 - ancho * 0.5
-	var k := clampf(j.vida / j.vida_max, 0.0, 1.0)
-	var nombre: String = Idioma.t(j.nombre)
+	var k := _vida_jefe()
+	var nombre: String = Idioma.t(String(jefe_espejo[0]) if not jefe_espejo.is_empty() else horda.jefe.nombre)
 	var x_nombre := roundf(320.0 - _ancho_texto(nombre) * 0.5)
 	draw_string(Juego.fuente, Vector2(x_nombre + 1, 10), nombre, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, COLOR_FONDO)
 	draw_string(Juego.fuente, Vector2(x_nombre, 9), nombre, HORIZONTAL_ALIGNMENT_LEFT, -1, 8, Color8(247, 198, 74))

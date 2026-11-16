@@ -9,6 +9,7 @@ signal ver_coleccion
 signal ver_logros
 signal ver_reto
 signal reanudar
+signal ver_online
 
 enum Vista { PRINCIPAL, OPCIONES, PAUSA }
 
@@ -26,6 +27,7 @@ var _indice := 0
 var _caen: Array = []
 var _cartas_fondo: Array = []
 var solo_titulo := false  # para el final del tráiler
+var con_online := false  # hay relé configurado: se ofrece el cooperativo online
 
 
 func _ready() -> void:
@@ -61,6 +63,8 @@ func _ir_a(vista: Vista) -> void:
 		Vista.PRINCIPAL:
 			# En el navegador un juego no puede cerrar la pestaña: el botón no haría nada.
 			_items = ["jugar", "reto", "coleccion", "logros", "opciones"]
+			if con_online:
+				_items.insert(1, "online")
 			if Guardado.hay_partida():
 				_items.push_front("reanudar")
 			if not web:
@@ -186,6 +190,9 @@ func _activar(id: String, sentido: int) -> void:
 		"reanudar":
 			cerrar()
 			reanudar.emit()
+		"online":
+			cerrar()
+			ver_online.emit()
 		"musica":
 			Juego.cambiar_volumenes(_siguiente_volumen(Juego.volumen_musica, sentido), Juego.volumen_efectos)
 		"efectos":
@@ -240,6 +247,7 @@ func _texto(id: String) -> String:
 		"coleccion": return Idioma.t("COLECCIÓN")
 		"logros": return Idioma.t("LOGROS")
 		"reto": return Idioma.t("RETO DIARIO")
+		"online": return Idioma.t("COOPERATIVO ONLINE")
 		"reanudar": return Idioma.t("CONTINUAR PARTIDA")
 		"musica": return Idioma.t("MÚSICA: %d%%") % roundi(Juego.volumen_musica * 100.0)
 		"efectos": return Idioma.t("EFECTOS: %d%%") % roundi(Juego.volumen_efectos * 100.0)

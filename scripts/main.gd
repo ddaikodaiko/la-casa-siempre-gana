@@ -129,6 +129,11 @@ var _tactiles: ControlesTactiles
 var _logros: PantallaLogros
 var _reto: PantallaReto
 var _online: Online  # la tabla mundial; sin online.cfg no hace nada ni se ve
+var _red: Red  # el cable del cooperativo online; sin relé configurado, apagado
+var _pareja: Pareja  # la partida online: qué se cuentan el anfitrión y el invitado
+var _sala_online: PantallaSala  # el vestíbulo
+## Cooperativo online, en el invitado: el anfitrión dice que tiene algo que comprar o jugar al lado.
+var a_mano_espejo := false
 var _prob_carta := 0.55
 var _cambiando_sala := false
 var _carta_pendiente := ""
@@ -217,13 +222,14 @@ func _crear_pantallas_extra() -> void:
 	_online = Online.new()
 	add_child(_online)
 	_reto.online = _online
-	for pantalla in [_tactiles, _panel, _seleccion, _coleccion, _logros, _reto]:
+	_crear_online()
+	for pantalla in [_tactiles, _panel, _seleccion, _coleccion, _logros, _reto, _sala_online]:
 		$UI.add_child(pantalla)
 	$UI.move_child(_tactiles, _menu.get_index())
 	_menu.jugar.connect(_seleccion.abrir)
 	_menu.ver_coleccion.connect(_coleccion.abrir)
 	_seleccion.elegido.connect(_al_elegir_personaje)
-	_seleccion.atras.connect(_menu.abrir_principal)
+	_seleccion.atras.connect(_al_volver_de_seleccion)
 	_coleccion.atras.connect(_menu.abrir_principal)
 	_panel.cerrado.connect(_al_cerrar_evento)
 	_menu.ver_logros.connect(_logros.abrir)
@@ -278,6 +284,18 @@ func _crear_crono() -> void:
 
 
 func _ir_al_menu() -> void:
+	var al_vestibulo := _pareja.al_ir_al_menu()  # con la sala online abierta se vuelve a ella
+	_recoger_partida()
+	if al_vestibulo:
+		_menu.cerrar()
+		_sala_online.abrir_en_sala()
+	else:
+		_menu.abrir_principal()
+	Sonido.musica("menu")
+
+
+## Lo que deja una partida al salir de ella: nada en la sala, nada en marcha y todo parado.
+func _recoger_partida() -> void:
 	_jugo.limpiar()
 	_pantalla.visible = false
 	en_combate = false
@@ -288,14 +306,21 @@ func _ir_al_menu() -> void:
 	_barra.parar_animacion()
 	_horda.limpiar()
 	_ataques.limpiar()
-	_cerrar_selector()
+	_selector.cerrar()
+	_barra.modo_sustituir = false
+	_carta_pendiente = ""
+	_hud.jefe_espejo = []
+	_letrero_coop.visible = false
+	# Un evento o una máquina a medias (en el invitado, el dibujo del anfitrión) no se queda
+	# pintado encima del menú o del vestíbulo, y los paneles vuelven a funcionar en local.
+	_panel.visible = false
+	_panel_apuestas.visible = false
+	_pareja.soltar_paneles()
 	get_tree().paused = true
-	_menu.abrir_principal()
-	Sonido.musica("menu")
 
 
 func _al_cerrar_final() -> void:
-	var era_reto: bool = Juego.diario
+	var era_reto: bool = Juego.diario and not Red.espejo
 	_ir_al_menu()
 	if era_reto:
 		_menu.cerrar()
@@ -304,6 +329,8 @@ func _al_cerrar_final() -> void:
 
 ## OTRA MANO: la misma partida (personaje, mesa y modo) desde cero, sin pasar por el menú.
 func _otra_mano() -> void:
+	if _esperar_al_anfitrion():
+		return
 	var personaje: String = Juego.personaje
 	var mesa: int = Juego.mesa
 	var extremo: bool = Juego.extremo and not Juego.imposible
@@ -317,6 +344,8 @@ func _otra_mano() -> void:
 
 ## Tras ganar se sigue bajando con todo lo que llevabas.
 func _seguir_infinito() -> void:
+	if _esperar_al_anfitrion():
+		return
 	Juego.empezar_infinito()
 	get_tree().paused = false
 	Sonido.musica("piso")
@@ -327,6 +356,7 @@ func _seguir_infinito() -> void:
 func _reanudar() -> void:
 	_letrero_coop.visible = false
 	get_tree().paused = false
+	_pareja.avisar_pausa(false)
 
 
 ## Cada evento pasa por el mando: así se sabe si lo último que se ha tocado es el mando
@@ -377,7 +407,7 @@ func empezar_partida(personaje := "", mesa := -1, extremo := false, imposible :=
 
 ## Desde la selección de personaje: con el J2 unido, la partida es cooperativa.
 func _al_elegir_personaje(personaje: String, mesa: int, extremo: bool, imposible: bool) -> void:
-	_coop_cfg = _seleccion.config_coop()
+	_coop_cfg = _pareja.config_coop() if _pareja.anfitrion() else _seleccion.config_coop()
 	empezar_partida(personaje, mesa, extremo, imposible)
 
 
@@ -415,6 +445,8 @@ func _seguir_continuar(datos: Dictionary, reto_caducado: bool) -> void:
 
 
 func _guardar_punto() -> void:
+	if Red.espejo:
+		return  # la partida es del anfitrión: el invitado no guarda nada
 	Guardado.guardar({"juego": Juego.volcar(), "salas": salas, "salas_limpiadas": _salas_limpiadas,
 		"prob_carta": _prob_carta, "pos": actual.pos})
 
@@ -429,7 +461,9 @@ func _al_tenir(id: String) -> void:
 
 
 func _arrancar() -> void:
+	_sala_online.cerrar()  # OTRA MANO online pasa por el vestíbulo: que no se quede encima
 	_preparar_jugadores()
+	_pareja.al_arrancar()
 	Sonido.musica("piso")
 	_prob_carta = 0.55
 	_generar_piso()
@@ -483,6 +517,7 @@ func _repartir_eventos() -> void:
 
 
 func mostrar_cartel(titulo: String, subtitulo: String) -> void:
+	Pareja.evento([Pareja.CARTEL, titulo, subtitulo])
 	_cartel.text = titulo
 	_cartel_sub.text = subtitulo
 	if _cartel_tween != null:
@@ -496,6 +531,7 @@ func mostrar_cartel(titulo: String, subtitulo: String) -> void:
 
 
 func entrar_sala(c: Vector2i, venimos: Vector2i) -> void:
+	_pareja.antes_de_cambiar_sala()
 	actual = salas[c]
 	actual.visitada = true
 	_hud.posicion_actual = c
@@ -550,6 +586,7 @@ func entrar_sala(c: Vector2i, venimos: Vector2i) -> void:
 		TIPO.APUESTAS:
 			_crear_apuestas()
 	_guardar_punto()
+	_pareja.al_entrar_sala(venimos)
 
 
 func _colocar_jugador(venimos: Vector2i) -> void:
@@ -571,6 +608,8 @@ func _physics_process(delta: float) -> void:
 	if get_tree().paused:
 		return
 	Juego.tiempo_partida += delta
+	if Red.espejo:
+		return  # el invitado no lleva la partida: la ve
 	Juego.enfriar_fiebre(delta)
 	if Juego.coop:
 		_actualizar_reanimacion(delta)
@@ -985,7 +1024,9 @@ func _al_golpear_jugador(quien: Node2D = null) -> void:
 	sacudir(6.0)
 	_jugo.destello(Color(0.84, 0.24, 0.31, 0.45), 0.2)
 	_jugo.parar(0.08, true)  # antes 0,1: se nota, pero no corta el ritmo
-	if not Juego.coop:
+	if quien.remoto:
+		Pareja.evento([Pareja.VIBRAR, Mando.VIBRAR_GOLPE])  # online: vibra el suyo, allí
+	elif not Juego.coop or quien.entrada == Mando.TODO:
 		Mando.vibrar(Mando.VIBRAR_GOLPE)
 	elif quien.entrada >= 0:
 		Mando.vibrar(Mando.VIBRAR_GOLPE, quien.entrada)  # vibra el mando de quien recibe
@@ -1013,6 +1054,9 @@ func sacudir(fuerza: float, direccion := Vector2.ZERO) -> void:
 # ------------------------------------------------------------ voltereta, órdago, mesas y fiebre
 ## Q o F (o el botón táctil): borra las balas enemigas y aparta a todos. Solo en combate.
 func lanzar_ordago(quien: Node2D = null) -> void:
+	if Red.espejo:
+		_pareja.pedir([Pareja.I_ACCION, "ordago"])  # el invitado lo pide; lo lanza el anfitrión
+		return
 	if quien == null:
 		quien = jugador
 	if get_tree().paused or not en_combate or quien.caido:
@@ -1037,7 +1081,9 @@ func lanzar_ordago(quien: Node2D = null) -> void:
 	_jugo.destello(Color(1, 1, 1, 0.35), 0.25)
 	_jugo.parar(0.05, true)
 	sacudir(8.0)
-	if not Juego.coop:
+	if quien.remoto:
+		Pareja.evento([Pareja.VIBRAR, Mando.VIBRAR_ORDAGO])
+	elif not Juego.coop or quien.entrada == Mando.TODO:
 		Mando.vibrar(Mando.VIBRAR_ORDAGO)
 	elif quien.entrada >= 0:
 		Mando.vibrar(Mando.VIBRAR_ORDAGO, quien.entrada)
@@ -1075,6 +1121,10 @@ func _al_desatar(activo: bool) -> void:
 
 
 func _al_volcar_mesa(posicion: Vector2, direccion: Vector2) -> void:
+	if Red.espejo:  # la he volcado yo, aquí: que el anfitrión la vuelque de verdad
+		for i in _sala.mesas.size():
+			if _sala.mesas[i].centro == posicion:
+				_pareja.pedir([Pareja.I_VOLCAR, i, direccion])
 	Progreso.sumar("mesas", 1)
 	Sonido.tocar("mesa", randf_range(0.9, 1.1))
 	_jugo.polvo(posicion + direccion * 8.0, 6, -direccion)
@@ -1205,7 +1255,7 @@ func _crear_apuestas() -> void:
 ## La máquina que tienes al lado (para E y el botón táctil), o null.
 ## En cooperativo, la que tiene al lado ese jugador (sin decir quién, cualquiera de los dos).
 func maquina_a_mano(quien: Node2D = null) -> Recogible:
-	if actual.get("tipo") != TIPO.APUESTAS or en_combate or get_tree().paused:
+	if actual.get("tipo") != TIPO.APUESTAS or en_combate or get_tree().paused or Red.espejo:
 		return null
 	for r in _recogibles.get_children():
 		if not r.is_queued_for_deletion() and r.clase == Recogible.Clase.MAQUINA and _toca(r, quien):
@@ -1214,6 +1264,9 @@ func maquina_a_mano(quien: Node2D = null) -> Recogible:
 
 
 func jugar_maquina(r: Recogible, quien: Node2D = null) -> void:
+	if Red.espejo:
+		_pareja.pedir([Pareja.I_ACCION, "interactuar"])
+		return
 	if r == null or _panel_apuestas.visible or en_combate:
 		return
 	_tomar_panel(quien if quien != null else r.quien_toca())
@@ -1475,6 +1528,9 @@ func _unhandled_input(evento: InputEvent) -> void:
 
 ## La E (o el botón de interactuar del mando): comprar lo que tienes delante o volcar una mesa.
 func _interactuar(quien: Node2D = null) -> void:
+	if Red.espejo:
+		_pareja.pedir([Pareja.I_ACCION, "interactuar"])  # comprar, jugar o volcar: lo decide el anfitrión
+		return
 	if quien != null and quien.caido:
 		return
 	var articulo := _articulo_cerca(quien)
@@ -1487,21 +1543,60 @@ func _interactuar(quien: Node2D = null) -> void:
 		_sala.volcar_cerca((quien if quien != null else jugador).position, 12.0, _horda)
 
 
-func articulo_a_mano() -> Recogible:
+## Sin tipo: en el invitado no hay artículos de verdad, solo el aviso del anfitrión de que
+## tiene algo al lado (y entonces vale cualquier cosa que no sea null).
+func articulo_a_mano():
+	if Red.espejo:
+		return self if a_mano_espejo else null
 	if actual.get("tipo") != TIPO.TIENDA:
 		return null
 	return _articulo_cerca()
 
 
+## Online: ¿tiene ese jugador algo que comprar o a lo que jugar al lado? (para su botón táctil)
+func algo_a_mano(quien: Node2D) -> bool:
+	if quien == null or get_tree().paused:
+		return false
+	return (actual.get("tipo") == TIPO.TIENDA and _articulo_cerca(quien) != null) or maquina_a_mano(quien) != null
+
+
 ## Esc no hace nada mientras eliges carta o estás en una pantalla de fin de partida.
 func quizas_pausar() -> void:
-	if get_tree().paused:
+	if get_tree().paused and not _pareja.pausa_prestada():
 		return
 	get_tree().paused = true
 	_menu.abrir_pausa()
+	_pareja.avisar_pausa(true)
 
 
-func comprar(r: Recogible, quien: Node2D = null) -> void:
+## Algo de este ordenador tiene la partida parada: el menú, un panel, el final...
+func algo_pausa() -> bool:
+	return _menu.visible or _panel_abierto() or _pantalla.visible or not _espera_j2.is_empty()
+
+
+func panel_a_la_vista() -> bool:
+	return _panel_abierto()
+
+
+## El jugador de este ordenador (en el invitado de una partida online, el J2).
+func mio() -> Node2D:
+	return jugador2 if Red.espejo and jugador2 != null else jugador
+
+
+func poner_letrero(texto: String) -> void:
+	_letrero_coop.text = texto
+	_letrero_coop.visible = texto != ""
+
+
+func retenir() -> void:
+	if not Juego.transformaciones.is_empty() and ObjetosDB.TRANSFORMACIONES.has(Juego.transformaciones[-1]):
+		_al_tenir(Juego.transformaciones[-1])
+
+
+func comprar(r, quien: Node2D = null) -> void:
+	if Red.espejo:
+		_pareja.pedir([Pareja.I_ACCION, "interactuar"])
+		return
 	if quien == null:
 		quien = r.quien_toca() if Juego.coop else jugador
 	if quien == null:
@@ -1651,6 +1746,9 @@ func abrir_selector(ids: Array, titulo: String) -> void:
 
 
 func _al_elegir_carta(id: String) -> void:
+	if Red.espejo:
+		_pareja.pedir([Pareja.I_ELEGIR, id])  # la carta la da el anfitrión, y él cierra el selector
+		return
 	Sonido.tocar("carta_coger")
 	_selector.cerrar()
 	_dar_carta(id)
@@ -1672,6 +1770,9 @@ func _dar_carta(id: String) -> void:
 
 
 func _al_sustituir(ranura: int) -> void:
+	if Red.espejo:
+		_pareja.pedir([Pareja.I_SUSTITUIR, ranura])
+		return
 	if Juego.dejaria_sin_ataques(ranura, _carta_pendiente):
 		_aviso.text = Idioma.t("NECESITAS AL MENOS UNA CARTA DE ATAQUE")
 		return
@@ -1684,6 +1785,9 @@ func _al_sustituir(ranura: int) -> void:
 
 
 func _cerrar_selector() -> void:
+	if Red.espejo:  # saltar la carta o no cambiar ninguna: también lo decide el anfitrión
+		_pareja.pedir([Pareja.I_SUSTITUIR, -1] if _barra.modo_sustituir else [Pareja.I_ELEGIR, ""])
+		return
 	_selector.cerrar()
 	_barra.modo_sustituir = false
 	_carta_pendiente = ""
@@ -1730,6 +1834,7 @@ func _acabar(gano: bool) -> void:
 			_online.enviar_reto(resumen)
 		else:
 			Progreso.registrar_practica(Juego.fecha_reto, int(resumen.puntos))
+	_pareja.al_acabar(gano)
 	_pantalla.mostrar_final(gano)
 
 
@@ -1810,10 +1915,25 @@ func _preparar_jugadores() -> void:
 		jugador2.collision_layer = 0
 		jugador.tambien_teclado = jugador.entrada >= 0 and not Mando.es_teclado(jugador2.entrada)
 	for j in jugadores:
+		# Cooperativo online: al del otro ordenador no lo mueve nada de aquí.
+		j.remoto = Juego.coop and j.entrada == Mando.REMOTO
+		j.remoto_manda = j.remoto and not Red.espejo
+		j.remoto_pos = j.position
+		j.remoto_dir = Vector2.ZERO
+		j.nombre_online = _nombre_online(j)
+		if j.caido:
+			j.levantar()
 		j.caido = false
 		j.reanimar = 0.0
 		j.aplicar_personaje()
 		j.queue_redraw()
+
+
+## Online, encima de cada jugador sale su nombre (si lo tiene) en vez de "J1"/"J2".
+func _nombre_online(j: Node2D) -> String:
+	if not _red.en_pareja() or not Juego.coop:
+		return ""
+	return _red.companero if j.remoto else _online.nombre
 
 
 func _crear_j2() -> void:
@@ -1900,7 +2020,7 @@ func _panel_abierto() -> bool:
 
 func _filtrar_panel(evento: InputEvent) -> void:
 	if not _panel_abierto():
-		if _dueno_panel != null:
+		if _dueno_panel != null and not Red.espejo:  # en el invitado, el dueño lo dice el anfitrión
 			_soltar_panel()
 		return
 	if _dueno_panel == null or _menu.visible:
@@ -2029,3 +2149,171 @@ func _terminar_espera_j2(cfg: Dictionary) -> void:
 	_seguir_continuar(datos, caducado)
 	if cfg.is_empty():
 		_aviso.text = Idioma.t("EL J2 NO HA VUELTO: SIGUES EN SOLITARIO")
+
+
+# ------------------------------------------------------------ cooperativo online
+## El cable (Red), la partida (Pareja) y el vestíbulo. Sin relé en online.cfg, sección
+## [multijugador], no se ve nada de esto ni se abre ninguna conexión.
+func _crear_online() -> void:
+	_red = Red.new()
+	add_child(_red)
+	_pareja = Pareja.new()
+	_pareja.red = _red
+	_pareja.p = self
+	add_child(_pareja)
+	_pareja.conectar_motor(_motor)
+	_pareja.cerrada.connect(_al_cerrarse_la_sala)
+	_pareja.sala_cambiada.connect(_al_cambiar_sala_online)
+	_sala_online = PantallaSala.new()
+	_sala_online.red = _red
+	_sala_online.pareja = _pareja
+	_sala_online.online = _online
+	_sala_online.atras.connect(_menu.abrir_principal)
+	_sala_online.empezar.connect(_elegir_para_online)
+	_menu.con_online = _red.disponible()
+	_menu.ver_online.connect(_sala_online.abrir)
+
+
+## El anfitrión, con el invitado ya en la sala: la selección de siempre, con el J2 puesto.
+func _elegir_para_online() -> void:
+	_seleccion.abrir_online(_pareja.personaje_invitado, _red.companero)
+
+
+func _al_volver_de_seleccion() -> void:
+	if _red.en_sala():
+		_sala_online.abrir_en_sala()
+	else:
+		_menu.abrir_principal()
+
+
+## El invitado cambia de personaje, o se va, mientras el anfitrión elige.
+func _al_cambiar_sala_online() -> void:
+	if not _seleccion.visible or not _seleccion.es_online():
+		return
+	if _red.en_pareja():
+		_seleccion.abrir_online(_pareja.personaje_invitado, _red.companero, true)
+	else:
+		_seleccion.cerrar_online()
+		if _red.en_sala():
+			_sala_online.abrir_en_sala()
+		else:
+			_menu.abrir_principal()
+
+
+## Invitado: el anfitrión se ha ido (o se ha perdido la conexión del todo).
+func _al_cerrarse_la_sala(motivo: String, jugaba: bool) -> void:
+	if jugaba:
+		_recoger_partida()
+		Sonido.musica("menu")
+	if jugaba or _sala_online.visible:
+		_menu.cerrar()
+		_sala_online.abrir_con_aviso(motivo)
+
+
+## Invitado: en la pantalla final solo se puede esperar o irse; repetir lo decide el anfitrión.
+func _esperar_al_anfitrion() -> bool:
+	if not Red.espejo:
+		return false
+	_pantalla.visible = true
+	_aviso.text = Idioma.t("ESO LO DECIDE EL ANFITRIÓN")
+	return true
+
+
+## Invitado: empieza (o sigue, tras un corte) la partida que lleva el anfitrión.
+func empezar_espejo(seguia: bool) -> void:
+	_coop_cfg = {"personaje2": Juego.personaje2, "entrada1": Mando.REMOTO, "entrada2": Mando.TODO}
+	_preparar_jugadores()
+	if not jugador2.voltereta.is_connected(_pareja.al_rodar_yo):
+		jugador2.voltereta.connect(_pareja.al_rodar_yo)  # mi voltereta, para que la vea el anfitrión
+	retenir()
+	for pantalla in [_menu, _sala_online, _seleccion, _coleccion, _logros, _reto, _pantalla, _panel, _panel_apuestas]:
+		pantalla.visible = false
+	_selector.cerrar()
+	_barra.modo_sustituir = false
+	_carta_pendiente = ""
+	_hud.jefe_espejo = []
+	_dueno_panel = null
+	a_mano_espejo = false
+	_aviso.text = ""
+	if not seguia:
+		Sonido.musica("piso")
+	get_tree().paused = false
+
+
+## Invitado: la sala en la que acaba de entrar el anfitrión, construida aquí igual.
+func entrar_sala_espejo(nuevas: Dictionary, pos: Vector2i, p1: Vector2, p2: Vector2) -> void:
+	salas = nuevas
+	actual = salas[pos]
+	_hud.salas = salas
+	_hud.posicion_actual = pos
+	_pantalla.visible = false
+	_horda.limpiar()
+	_ataques.limpiar()
+	_jugo.limpiar()
+	_hud.jefe_espejo = []
+	_pintar_piso()
+	_ajustar_mesas()
+	_sala.construir(actual, salas)
+	for j in jugadores:
+		j.velocity = Vector2.ZERO
+		j.position = p1 if j.indice == 0 else p2
+		j.remoto_pos = j.position
+		j.mostrar_etiqueta()
+	_jugo.al_entrar_sala(int(actual.tipo), Juego.piso)
+	_fundido.color.a = 1.0
+	create_tween().tween_property(_fundido, "color:a", 0.0, 0.07)
+
+
+## Invitado: se acabó la partida. Las victorias y las partidas jugadas también cuentan aquí
+## (una vez: "contar" es false si este final ya había llegado antes de un corte).
+func acabar_espejo(gano: bool, contar := true) -> void:
+	_selector.cerrar()
+	_barra.modo_sustituir = false
+	_barra.en_combate = false
+	_barra.parar_animacion()
+	_panel.visible = false
+	_panel_apuestas.visible = false
+	_crono.visible = false
+	_horda.limpiar()
+	_ataques.limpiar()
+	_jugo.limpiar()
+	_pareja.espejo.vaciar()
+	_hud.jefe_espejo = []
+	Sonido.musica("")
+	Juego.novedades = []
+	if gano and contar and not Juego.infinito:
+		Juego.novedades += Progreso.al_ganar(Juego.mesa, Juego.extremo, Juego.personaje2, 0)
+	if contar and not Juego.infinito:
+		Juego.novedades += Progreso.al_terminar_partida()
+	get_tree().paused = true
+	_aviso.text = ""
+	_pantalla.mostrar_final(gano)
+
+
+## Invitado: el anfitrión ha vuelto al vestíbulo (la sala sigue abierta).
+func volver_al_vestibulo() -> void:
+	_recoger_partida()
+	_panel.visible = false
+	_panel_apuestas.visible = false
+	_menu.cerrar()
+	_sala_online.abrir_en_sala()
+	Sonido.musica("menu")
+
+
+## Anfitrión: el invitado se ha ido con la partida en marcha. Se sigue con un solo jugador.
+func seguir_en_solitario() -> void:
+	if jugador2 == null:
+		return
+	if _dueno_panel == jugador2:
+		_dueno_panel = jugador  # lo que hubiera abierto lo termina el que queda
+		Juego.titular = 0
+	var vida := Juego.vida
+	Juego.quitar_coop()
+	_coop_cfg = {}
+	_preparar_jugadores()
+	if vida <= 0:  # estaba fuera de juego: vuelve como al limpiar la sala
+		Juego.poner_vida(0, VIDA_AL_LIMPIAR, Juego.vida_max)
+		jugador.proteger(1.2)
+	retenir()
+	if not _pantalla.visible:
+		_aviso.text = Idioma.t("TU COMPAÑERO SE HA IDO: SIGUES EN SOLITARIO")

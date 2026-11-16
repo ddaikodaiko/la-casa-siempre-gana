@@ -29,6 +29,7 @@ Solo te mueves. Tu personaje ataca por su cuenta, y lo que hace depende de una f
 - Se puede jugar en el móvil, con un joystick que aparece donde pones el dedo.
 - Se puede jugar con mando, con vibración y ayudas con los botones de cada marca.
 - Cooperativo local para dos jugadores en la misma pantalla: cada uno con sus corazones, una fila de cartas compartida y reanimaciones.
+- Cooperativo online: lo mismo, cada uno en su casa. Uno crea una sala y le pasa el código de cuatro letras al otro. Viene apagado hasta que se configura un relé (`servidor/rele/`, pasos en `servidor/README.md`).
 - En español, inglés, portugués de Brasil, francés, alemán e italiano.
 
 | | |

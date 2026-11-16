@@ -120,11 +120,15 @@ var _intensidad := 0.0
 
 
 static func tocar(nombre: String, tono := 1.0, ajuste_db := 0.0) -> void:
+	if Red.reenviando and Red.eco:  # cooperativo online: el invitado también lo oye
+		Red.cola.append([Red.SONIDO, nombre, tono, ajuste_db])
 	if _yo != null:
 		_yo._tocar(nombre, tono, ajuste_db)
 
 
 static func musica(nombre: String) -> void:
+	if Red.reenviando and Red.eco:
+		Red.cola.append([Red.MUSICA, nombre])
 	if _yo != null:
 		_yo._poner_musica(nombre)
 
