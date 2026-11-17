@@ -211,3 +211,9 @@ pasa de ahí se queda sin conexión) y los topes de mensajes; están al principi
 cd servidor/rele && bun test                 # el relé solo
 GODOT=/ruta/a/godot tests/prueba_pareja.sh   # el relé y dos juegos: una partida entera
 ```
+
+**Relé por defecto en el repo.** `multijugador.cfg` (en la raíz, versionado) lleva la URL
+del relé desplegado y se exporta con el juego, así que cualquier build —la de itch.io
+incluida— trae el cooperativo online encendido sin `online.cfg`. Si existe un `online.cfg`
+con otro `servidor`, manda ese; para apagar el online, deja `servidor=""` en `multijugador.cfg`.
+Si cambias de URL (otro servicio o región), actualiza `multijugador.cfg` y vuelve a exportar.

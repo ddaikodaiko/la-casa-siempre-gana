@@ -17,7 +17,7 @@ signal companero_vuelve  # el otro ha vuelto tras un corte: el anfitrión se lo 
 
 enum Estado { APAGADO, CONECTANDO, CONECTADO, EN_SALA, VOLVIENDO }
 
-const RUTAS_CONFIG := ["user://online.cfg", "res://online.cfg"]
+const RUTAS_CONFIG := ["user://online.cfg", "res://online.cfg", "res://multijugador.cfg"]
 ## La versión del juego y, detrás, la de lo que se cuentan los dos ordenadores. Solo se juntan
 ## dos iguales: súbela con cada versión del juego y con cada cambio en pareja.gd o espejo.gd.
 const VERSION := "1.9-2"
