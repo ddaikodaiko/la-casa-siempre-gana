@@ -65,8 +65,7 @@ func _correr() -> void:
 	m.jugador.global_position = j.position + Vector2(20, 0)
 	m.jugador2.global_position = j.position + Vector2(0, 150)
 	var n0: int = h.ataques._balas_enemigas.size()
-	j._reloj_pareja = 0.0
-	j._tick_pareja(0.01, h)
+	j._ataque_pareja(h, 1)
 	var nuevas: Array = h.ataques._balas_enemigas.slice(n0)
 	_ok(nuevas.size() >= 5, "ataque de pareja suelta balas (%d)" % nuevas.size())
 	var hacia := 0
@@ -85,5 +84,45 @@ func _correr() -> void:
 	var e1: int = h.enemigos.size()
 	await _esperar(5)
 	_ok(h.enemigos.size() <= e1 + 1, "la furia invoca una sola vez")
+	await _propios()
 	print("FALLOS ", _fallos)
 	quit(1 if _fallos > 0 else 0)
+
+
+func _zonas(h) -> int:
+	var n := 0
+	for c in h.ataques.get_children():
+		if c.has_method("iniciar"):
+			n += 1
+	return n
+
+
+## Ataque propio de Pez, Ruleta y Dueño: solo en pareja.
+func _propios() -> void:
+	for pareja in [false, true]:
+		await _nueva(pareja)
+		var h = m._horda
+		for id in ["pez", "ruleta", "dueno"]:
+			var j = load("res://scripts/jefe.gd").crear(id)
+			m.add_child(j)
+			j.preparar(1.0)
+			j._nacer = 0.0
+			j.position = Vector2(240, 135)
+			m.jugador.global_position = j.position + Vector2(20, 0)
+			if pareja:
+				m.jugador2.global_position = j.position + Vector2(0, 110)
+			j.vida = 0.25 * j.vida_max
+			j.actualizar(0.02, h)  # arranca la furia si toca
+			j._reloj_pareja = 0.0
+			var z0 := _zonas(h)
+			j.actualizar(0.02, h)
+			var nuevas := _zonas(h) - z0
+			if pareja:
+				_ok(j._turno_pareja == 1 and nuevas > 0, "%s en pareja: ataque propio (%d zonas)" % [id, nuevas])
+				_ok(j._rotulo_t > 0.0, "%s en pareja: rotulo de aviso" % id)
+			else:
+				_ok(j._turno_pareja == 0 and j._rotulo_t == 0.0, "%s solitario: sin ataque de pareja" % id)
+			j.queue_free()
+			for c in h.ataques.get_children():
+				if c.has_method("iniciar"):
+					c.queue_free()

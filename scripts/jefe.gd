@@ -29,6 +29,7 @@ var _letrero_pareja: Label
 var _furia_pareja := false
 var _reloj_pareja := PAREJA_ATAQUE_SEG
 var _turno_pareja := 0
+var _rotulo_t := 0.0
 
 
 static func crear(id: String) -> Jefe:
@@ -174,11 +175,35 @@ func _tick_pareja(delta: float, horda: Horda) -> void:
 		_letrero_pareja.text = Idioma.t("¡A POR LOS DOS!")
 		add_child(_letrero_pareja)
 		_reloj_pareja = 1.0
+	if _rotulo_t > 0.0:
+		_rotulo_t -= delta
+		if _rotulo_t <= 0.0 and _letrero != null:
+			_letrero.text = ""
 	_reloj_pareja -= delta
 	if _reloj_pareja <= 0.0:
 		_reloj_pareja = PAREJA_ATAQUE_FURIA_SEG if _furia_pareja else PAREJA_ATAQUE_SEG
 		_turno_pareja += 1
-		_ataque_pareja(horda, _turno_pareja)
+		if not _ataque_pareja_propio(horda, _turno_pareja):
+			_ataque_pareja(horda, _turno_pareja)
+
+
+## Cada jefe puede sustituir el ataque genérico de pareja por uno suyo: devuelve true
+## si ha atacado (el genérico se salta).
+func _ataque_pareja_propio(_horda: Horda, _turno: int) -> bool:
+	return false
+
+
+## Un rótulo temporal sobre el jefe (avisa del ataque de pareja).
+func _rotular(texto: String, seg: float) -> void:
+	if _letrero == null:
+		return
+	_letrero.text = texto
+	_rotulo_t = seg
+
+
+func _dentro(p: Vector2) -> Vector2:
+	var zona := Sala.INTERIOR.grow(-24.0)
+	return p.clamp(zona.position, zona.end)
 
 
 ## El ataque extra de la pareja: un abanico al más lejano, un anillo y, furioso, un muro.
